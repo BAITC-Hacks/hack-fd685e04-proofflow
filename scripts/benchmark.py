@@ -18,7 +18,19 @@ def main():
     start = perf_counter()
     if args.files:
         from importer import import_files
-        dataset = import_files(args.files)
+        paths = []
+        for entry in args.files:
+            source = Path(entry)
+            if source.is_dir():
+                paths.extend(str(path) for path in sorted(source.rglob("*"))
+                             if path.is_file() and path.suffix.lower() in {".xlsx", ".csv", ".json", ".zip"})
+            elif source.is_file():
+                paths.append(str(source))
+            else:
+                raise SystemExit(f"Input not found: {entry}")
+        if not paths:
+            raise SystemExit("No supported files found")
+        dataset = import_files(paths)
         source = "local partner files"
     else:
         from demo_data import build_demo
@@ -27,6 +39,8 @@ def main():
     imported = perf_counter()
 
     from engine import calculate
+    if not dataset.get("products") or not dataset.get("sales"):
+        raise SystemExit("Input normalization produced no products or sales")
     result = calculate(dataset)
     calculated = perf_counter()
     report = {

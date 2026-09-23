@@ -109,7 +109,7 @@ def test_event_id_can_flag_one_off_order_without_claiming_customer_identity():
                           "event_id": "ANON-ORDER-1"})
     result = row(data)
     assert result["excluded_quantity"] >= 500
-    assert any("order event, not a customer" in w for w in result["warnings"])
+    assert any("номером документа, а не с идентификатором клиента" in w for w in result["warnings"])
 
 
 def test_seasonality_is_non_neutral_and_future_date_specific():
@@ -140,4 +140,4 @@ def test_future_receipt_is_not_silently_added_to_current_stock():
                         "eta": (AS_OF - timedelta(days=1)).isoformat()}]
     result = calculate(data)
     assert result["rows"][0]["inbound_quantity"] == 0
-    assert any("excluded from projection" in w for w in result["warnings"])
+    assert any("не учтена в прогнозе" in w for w in result["warnings"])

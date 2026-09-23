@@ -22,6 +22,26 @@ DEFAULT_SETTINGS = {
     "trend_window_days": 90,
 }
 
+# Protect the synchronous local calculation from accidental unbounded loops.
+# The supplied partner sample (~250k sales, 2023–2026) remains well below these.
+MAX_HORIZON_DAYS = 730
+MAX_PRODUCTS = 50_000
+MAX_SALES = 2_000_000
+MAX_STOCKOUTS = 100_000
+MAX_INBOUND = 2_000_000
+MAX_HISTORY_POINTS = 10_000_000
+MAX_STOCKOUT_EXPANSION_DAYS = 10_000_000
+
+
+def _ten_years_before(day: date) -> date:
+    """Earliest permitted calendar date, including a leap-day fallback."""
+    if day.year <= 10:
+        return date.min
+    try:
+        return day.replace(year=day.year - 10)
+    except ValueError:  # February 29 in a non-leap target year.
+        return day.replace(year=day.year - 10, day=28)
+
 
 def _number(value: Any, name: str, *, minimum: float | None = None) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not isfinite(value):
@@ -170,9 +190,13 @@ def _calc_product(product: dict[str, Any], dataset: dict[str, Any], as_of: date,
     safety_days = int(_number(cat_policy.get("safety_days", settings["safety_days"]),
                               f"category_policies[{product.get('category')}].safety_days", minimum=0))
     horizon = max(1, lead_days + review_days + safety_days)
+    if horizon > MAX_HORIZON_DAYS:
+        raise ValueError(
+            f"products[{sku}].horizon exceeds {MAX_HORIZON_DAYS} days "
+            "(lead_days + review_days + safety_days)")
     local_warnings: list[str] = []
     if not product.get("supplier"):
-        local_warnings.append("Supplier is missing; include this SKU in an unassigned-supplier review queue")
+        local_warnings.append("Поставщик не указан: проверьте позицию в очереди без назначенного поставщика")
 
     tx_by_day_client: dict[date, dict[str, float]] = defaultdict(lambda: defaultdict(float))
     known_clients: set[str] = set()
@@ -185,7 +209,7 @@ def _calc_product(product: dict[str, Any], dataset: dict[str, Any], as_of: date,
         tx_by_day_client[d][client] += tx["quantity"]
     intervals = stockouts_by_key.get(k, [])
     start_dates = [d for d in tx_by_day_client if d <= as_of]
-    observation_start = dataset.get("metadata", {}).get("observation_start")
+    observation_start = (dataset.get("metadata") or {}).get("observation_start")
     explicit_start = _day(observation_start, "metadata.observation_start") if observation_start else None
     stockout_starts = [start for start, _ in intervals if start <= as_of]
     anchors = start_dates + stockout_starts + ([explicit_start] if explicit_start else [])
@@ -250,11 +274,13 @@ def _calc_product(product: dict[str, Any], dataset: dict[str, Any], as_of: date,
         events.append({"date": history_dates[i].isoformat(), "client_id": client,
                        "raw_quantity": round(total, 6), "retained_quantity": round(expected, 6),
                        "excluded_quantity": round(removed, 6), "client_share": round(share, 4),
-                       "reason": "isolated one-day outlier; dominant client/order event; no repeated same-month peak"})
+                       "reason": "Разовый выброс за день: преобладает один клиент или заказ; повторного пика в том же месяце нет"})
         if client == "__unknown_client__" or not any(
                 tx.get("client_id") and str(tx.get("client_id")) == client
                 for tx in sales_by_key.get(k, [])):
-            local_warnings.append(f"{history_dates[i].isoformat()}: isolated spike attributed to an order event, not a customer; validate before excluding")
+            local_warnings.append(
+                f"{history_dates[i].isoformat()}: разовый всплеск связан с номером документа, "
+                "а не с идентификатором клиента; проверьте исключение")
 
     cleaned = [max(0.0, v - excluded_by_index.get(i, 0.0))
                for i, v in enumerate(raw_values)]
@@ -291,8 +317,8 @@ def _calc_product(product: dict[str, Any], dataset: dict[str, Any], as_of: date,
                         "stockout": is_stockout[i], "excluded": i in excluded_by_index})
     if sparse_reference_days:
         local_warnings.append(
-            f"{sparse_reference_days} stockout days use global median; fewer than "
-            f"{settings['stockout_min_reference_days']} same-weekday references")
+            f"Для {sparse_reference_days} дней отсутствия товара использована общая медиана: "
+            f"наблюдений за тот же день недели меньше {settings['stockout_min_reference_days']}")
 
     seasonality = _seasonal_indices(
         [{"date": r["date"], "demand": r["adjusted_demand"],
@@ -374,24 +400,32 @@ def _calc_product(product: dict[str, Any], dataset: dict[str, Any], as_of: date,
     adjusted_daily = _mean([r["adjusted_demand"] for r in history])
     warnings_for_row = sorted(set(local_warnings))
     if not tx_by_day_client:
-        warnings_for_row.append("No dated sales history; no demand forecast can be inferred")
+        warnings_for_row.append("Нет истории продаж с датами: прогноз спроса построить невозможно")
     elif adjusted_daily == 0:
-        warnings_for_row.append("No positive demand history; recommendation is zero unless configured data says otherwise")
+        warnings_for_row.append(
+            "В истории нет положительного спроса: без дополнительных данных рекомендация равна нулю")
     if local_warnings:
         warnings.extend(f"{sku}/{warehouse}: {w}" for w in warnings_for_row)
     if not tx_by_day_client or adjusted_daily == 0:
         warnings.extend(w for w in warnings_for_row if w not in warnings)
 
+    urgency_label = {"critical": "критическая", "high": "высокая",
+                     "normal": "обычная", "covered": "запас покрывает спрос"}[urgency]
+    source_label = "синтетические данные" if dataset.get("metadata", {}).get("synthetic", False) else "загруженные данные"
+    stockout_label = stockout_date or "не ожидается в пределах горизонта расчёта"
     explanation = (
-        f"Synthetic={bool(dataset.get('metadata', {}).get('synthetic', False))}. "
-        f"Forecast {forecast_need:.2f} units over {horizon} days (lead {lead_days} + review {review_days} + safety {safety_days}); "
-        f"on hand {on_hand:.2f}; receipts by horizon end {inbound_in_horizon:.2f}; "
-        f"maximum dated shortfall {net_need:.2f} (end-horizon gap {terminal_net_need:.2f}); "
-        f"MOQ {moq:g}, pack {pack_size:g}; recommend {recommended:g}. "
-        f"Adjusted historical demand {adjusted_daily:.3f}/day; lost demand imputed {lost_total:.2f} units; "
-        f"excluded anomaly volume {sum(excluded_by_index.values()):.2f}; "
-        f"seasonality x{mean_seasonality:.3f}, trend x{trend_factor:.3f}, growth x{growth_factor:.3f}. "
-        f"Urgency: {urgency}; projected stockout without a new order {stockout_date or 'none in simulation'}."
+        f"Источник: {source_label}. "
+        f"Прогноз спроса {forecast_need:.2f} ед. на {horizon} дн. "
+        f"(поставка {lead_days} + пересмотр {review_days} + страховой запас {safety_days}); "
+        f"остаток {on_hand:.2f}; поступления до конца горизонта {inbound_in_horizon:.2f}; "
+        f"максимальный дефицит по датам {net_need:.2f} "
+        f"(дефицит в конце горизонта {terminal_net_need:.2f}); "
+        f"минимальная партия {moq:g}, кратность упаковки {pack_size:g}; рекомендуем {recommended:g}. "
+        f"Скорректированный исторический спрос {adjusted_daily:.3f} ед./день; "
+        f"оценка упущенного спроса {lost_total:.2f} ед.; "
+        f"исключено выбросов {sum(excluded_by_index.values()):.2f} ед.; "
+        f"сезонность ×{mean_seasonality:.3f}, тренд ×{trend_factor:.3f}, прирост ×{growth_factor:.3f}. "
+        f"Срочность: {urgency_label}; ожидаемый дефицит без нового заказа: {stockout_label}."
     )
     return {
         "sku": sku, "name": product.get("name", sku), "supplier": product.get("supplier", ""),
@@ -425,9 +459,15 @@ def calculate(dataset: dict[str, Any]) -> dict[str, Any]:
     as_of = _day(dataset.get("as_of"), "as_of")
     if not isinstance(dataset.get("products"), list) or not dataset["products"]:
         raise ValueError("products must be a non-empty list")
+    if len(dataset["products"]) > MAX_PRODUCTS:
+        raise ValueError(f"products exceeds {MAX_PRODUCTS} rows")
     for field in ("sales", "stockouts", "inbound"):
         if dataset.get(field) is not None and not isinstance(dataset[field], list):
             raise ValueError(f"{field} must be a list")
+    for field, limit in (("sales", MAX_SALES), ("stockouts", MAX_STOCKOUTS),
+                         ("inbound", MAX_INBOUND)):
+        if len(dataset.get(field) or []) > limit:
+            raise ValueError(f"{field} exceeds {limit} rows")
     if dataset.get("metadata") is not None and not isinstance(dataset["metadata"], dict):
         raise ValueError("metadata must be an object")
     settings = dict(DEFAULT_SETTINGS)
@@ -446,6 +486,12 @@ def calculate(dataset: dict[str, Any]) -> dict[str, Any]:
         settings[key] = _number(settings[key], f"settings.{key}", minimum=0)
     if settings["spike_client_share"] > 1:
         raise ValueError("settings.spike_client_share must be <= 1")
+    history_floor = _ten_years_before(as_of)
+    observation_start = dataset.get("metadata", {}).get("observation_start")
+    if observation_start:
+        observed_from = _day(observation_start, "metadata.observation_start")
+        if observed_from < history_floor or observed_from > as_of:
+            raise ValueError("metadata.observation_start must be within the last 10 years and not after as_of")
 
     global_warnings = list(dataset.get("metadata", {}).get("warnings", []))
     products_by_key: dict[tuple[str, str], dict[str, Any]] = {}
@@ -461,12 +507,15 @@ def calculate(dataset: dict[str, Any]) -> dict[str, Any]:
         products_by_key[k] = p
 
     sales_by_key: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    earliest_by_key: dict[tuple[str, str], date] = {}
     ignored_future_sales = 0
     ignored_unknown_sales = 0
     for i, row in enumerate(dataset.get("sales", [])):
         if not isinstance(row, dict):
             raise ValueError(f"sales[{i}] must be an object")
         d = _day(row.get("date"), f"sales[{i}].date")
+        if d < history_floor:
+            raise ValueError(f"sales[{i}].date is more than 10 years before as_of")
         qty = _number(row.get("quantity"), f"sales[{i}].quantity", minimum=0)
         k = _key(str(row.get("sku", "")), str(row.get("warehouse") or "default"))
         if d > as_of:
@@ -477,12 +526,16 @@ def calculate(dataset: dict[str, Any]) -> dict[str, Any]:
             sales_by_key[k].append({"date": d.isoformat(), "quantity": qty,
                                     "client_id": row.get("client_id"),
                                     "event_id": row.get("event_id")})
+            earliest_by_key[k] = min(d, earliest_by_key.get(k, d))
     if ignored_future_sales:
-        global_warnings.append(f"{ignored_future_sales} sales transactions after as_of {as_of} ignored")
+        global_warnings.append(
+            f"Не учтено продаж после расчётной даты {as_of}: {ignored_future_sales}")
     if ignored_unknown_sales:
-        global_warnings.append(f"{ignored_unknown_sales} sales transactions for unknown sku/warehouse ignored")
+        global_warnings.append(
+            f"Не учтено продаж для неизвестного артикула или склада: {ignored_unknown_sales}")
 
     stockouts_by_key: dict[tuple[str, str], list[tuple[date, date]]] = defaultdict(list)
+    stockout_expansion_days = 0
     for i, row in enumerate(dataset.get("stockouts", [])):
         if not isinstance(row, dict):
             raise ValueError(f"stockouts[{i}] must be an object")
@@ -490,14 +543,25 @@ def calculate(dataset: dict[str, Any]) -> dict[str, Any]:
         end = _day(row.get("end"), f"stockouts[{i}].end")
         if end < start:
             raise ValueError(f"stockouts[{i}].end precedes start")
+        if start < _ten_years_before(end):
+            raise ValueError(f"stockouts[{i}] interval exceeds 10 years")
+        if start < history_floor:
+            raise ValueError(f"stockouts[{i}].start is more than 10 years before as_of")
         k = _key(str(row.get("sku", "")), str(row.get("warehouse") or "default"))
         if k in products_by_key:
             if start <= as_of:
                 stockouts_by_key[k].append((start, min(end, as_of)))
+                earliest_by_key[k] = min(start, earliest_by_key.get(k, start))
+                stockout_expansion_days += (min(end, as_of) - start).days + 1
+                if stockout_expansion_days > MAX_STOCKOUT_EXPANSION_DAYS:
+                    raise ValueError(
+                        f"stockout intervals exceed {MAX_STOCKOUT_EXPANSION_DAYS} expanded days")
             else:
-                global_warnings.append(f"stockouts[{i}] starts after as_of {as_of}; ignored")
+                global_warnings.append(
+                    f"Период отсутствия товара stockouts[{i}] начинается после расчётной даты {as_of}; не учтён")
         else:
-            global_warnings.append(f"stockouts[{i}] references unknown sku/warehouse {k[1]}/{k[0]}; ignored")
+            global_warnings.append(
+                f"Период отсутствия товара stockouts[{i}]: неизвестный артикул/склад {k[1]}/{k[0]}; не учтён")
 
     inbound_by_key: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     for i, row in enumerate(dataset.get("inbound", [])):
@@ -509,11 +573,23 @@ def calculate(dataset: dict[str, Any]) -> dict[str, Any]:
         if k in products_by_key:
             if eta <= as_of:
                 # Past receipts are not silently applied to today's on-hand.
-                global_warnings.append(f"inbound[{i}] ETA {eta} is not after as_of; excluded from projection")
+                global_warnings.append(
+                    f"Поставка inbound[{i}] с датой {eta} не позже расчётной даты; "
+                    "не учтена в прогнозе")
             else:
                 inbound_by_key[k].append({"eta": eta.isoformat(), "quantity": qty})
         else:
-            global_warnings.append(f"inbound[{i}] references unknown sku/warehouse {k[1]}/{k[0]}; ignored")
+            global_warnings.append(
+                f"Поставка inbound[{i}]: неизвестный артикул/склад {k[1]}/{k[0]}; не учтена")
+
+    history_points = 0
+    for k in products_by_key:
+        earliest = earliest_by_key.get(k, as_of)
+        if observation_start:
+            earliest = min(earliest, observed_from)
+        history_points += (as_of - earliest).days + 1
+        if history_points > MAX_HISTORY_POINTS:
+            raise ValueError(f"combined product histories exceed {MAX_HISTORY_POINTS} days")
 
     rows = [_calc_product(p, dataset, as_of, sales_by_key, stockouts_by_key,
                           inbound_by_key, settings, global_warnings)
