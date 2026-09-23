@@ -38,6 +38,10 @@ not claimed as observed facts when source fields do not support them.
    multi-day elevated run, or non-dominant single order is retained. These
    conservative rules avoid deleting sustained growth, but can miss genuine
    one-offs; tune only with business validation.
+   With document IDs only, a stricter fallback requires at least 14 positive
+   demand days and an order above all of `2 * candidate_threshold`,
+   `8 * median(positive days)` and `3 * P90(positive days)`. This prevents zero
+   medians on intermittent products from removing ordinary sparse orders.
 3. Explicit inclusive stockout intervals are censored. Lost demand per day is
    `max(0, same-weekday median of available non-stockout demand - observed
    sales)`. At least three reference dates are required by default; otherwise
@@ -49,8 +53,10 @@ not claimed as observed facts when source fields do not support them.
    `seasonality_min_observations` (10 by default). Insufficient groups default
    to 1.0, and no positive history yields neutral indices with a warning.
 5. A least-squares linear slope over the latest `trend_window_days` (90 by
-   default) of adjusted daily history supplies an average projected trend
+   default) of deseasonalized adjusted daily history supplies an average projected trend
    multiplier. It is bounded to 0.5–2.0; fewer than 8 usable dates gives 1.0.
+   Each historical value is first divided by its weekday/month factor (floor
+   0.05), so the same seasonal rise is not counted again as persistent growth.
    This is a transparent heuristic, not a statistical confidence interval.
 6. Forward growth is multiplicative:
    `(1 + product.growth) * (1 + category_policy.growth)`. It is kept separate
@@ -98,6 +104,8 @@ the actual inputs, component factors, dates and rounding that produced the
 recommendation. `supplier_groups` contains compact supplier subtotals only;
 each SKU appears once in `rows`, avoiding duplicated response payloads.
 Missing supplier is visibly grouped as `UNASSIGNED`.
+Human-facing engine messages support `settings.locale` values `ru`, `kk`,
+and `en`; language never changes numeric quantities or machine field names.
 
 ## Provisional defaults
 

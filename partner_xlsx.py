@@ -45,11 +45,21 @@ def _number(value):
 
 
 def _supplier(path: Path):
-    name = str(path).casefold()
+    name = path.name.casefold()
     if "iek" in name or "иэк" in name:
         return "IEK"
     if "systeme" in name or "syseme" in name or "сэ" in name:
         return "Systeme Electric"
+    # Browser multipart uploads retain the filename but not the IEK folder.
+    # These two exact source filenames belong to the provided IEK collection.
+    if name.endswith(("динамика продаж_2025-2026.xlsx",
+                      "ежемесячные продажи в количественном выражении за последние 2 года.xlsx")):
+        return "IEK"
+    for parent in path.parents:
+        if parent.name.casefold() in {"iek", "иэк"}:
+            return "IEK"
+        if parent.name.casefold() in {"systeme electric", "systeme-electric"}:
+            return "Systeme Electric"
     return None
 
 

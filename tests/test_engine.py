@@ -125,6 +125,27 @@ def test_sparse_document_orders_are_not_mistaken_for_one_off_spikes():
     assert result["excluded_quantity"] == 0
 
 
+def test_regular_weekly_orders_from_distinct_customers_are_retained():
+    data = sample(days=60, quantity=0, on_hand=0)
+    for index, sale in enumerate(data["sales"]):
+        if index % 7 == 0:
+            sale["quantity"] = 10
+            sale["client_id"] = f"SYNTHETIC-CUSTOMER-{index}"
+    result = row(data)
+    assert result["excluded_quantity"] == 0
+    assert result["daily_demand"] > 0
+    assert result["recommended_quantity"] > 0
+
+
+@pytest.mark.parametrize("field,value", [("metadata", None), ("category_policies", None),
+                                         ("category_policies", {"cable": "invalid"})])
+def test_malformed_optional_objects_fail_with_validation_error(field, value):
+    data = sample()
+    data[field] = value
+    with pytest.raises(ValueError, match="object"):
+        calculate(data)
+
+
 def test_seasonality_is_non_neutral_and_future_date_specific():
     data = sample(days=730, quantity=1, on_hand=0)
     for sale in data["sales"]:

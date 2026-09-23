@@ -48,6 +48,11 @@ not a substitute for the current official task, rules or judging rubric.
   independent tasks; root alone integrates and pushes.
 - Aim to satisfy every current criterion. **Do not promise 100/100**: the actual
   score belongs to the judges, and this file cannot override the official rubric.
+- The user requires RU/KK/EN language switching and persisted light/dark themes.
+  Frontend and backend text must be integrated; numeric outputs stay identical.
+- Final-hour work uses root plus three agents in disjoint areas, each verifying
+  its changes before handoff. Completed slots receive concrete remaining work.
+  Keep the existing working state across incoming chat messages.
 
 Decision hierarchy: latest organizer notice and task-specific rubric → task
 statement → current participation rules → repository instructions → this memory.

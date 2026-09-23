@@ -96,3 +96,14 @@ def test_zip_member_path_cannot_escape_extract_dir(tmp_path):
     dataset = import_files([str(archive_path)])
     assert len(dataset["sales"]) == 1
     assert not (tmp_path.parent / "Динамика продаж_IEK.xlsx").exists()
+
+
+def test_generic_iek_sales_filename_survives_browser_upload(tmp_path):
+    xlsx = tmp_path / "0_Динамика продаж_2025-2026.xlsx"
+    _book(xlsx, [
+        ["Дата", "Номер", "Документ", "Код", "Номенклатура", "Ед.", "Склад", "Количество"],
+        [date(2026, 9, 22), "doc", "Накладная", "SKU-1", "Кабель", "шт", "Алматы", 3],
+    ])
+    dataset = import_files([str(xlsx)])
+    assert len(dataset["sales"]) == 1
+    assert dataset["products"][0]["supplier"] == "IEK"

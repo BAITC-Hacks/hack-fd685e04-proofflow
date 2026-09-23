@@ -13,6 +13,7 @@ def main():
         "docs/ARCHITECTURE.md", "docs/COMPLIANCE.md",
         "docs/METHODOLOGY.md", "docs/DATA_MAPPING.md",
         "frontend/index.html", "frontend/app.js", "frontend/styles.css",
+        "frontend/i18n.js", "localization.py",
         "engine.py", "importer.py", "partner_xlsx.py", "demo_data.py",
         "server.py", "storage.py", "exports.py",
     ]
@@ -23,6 +24,7 @@ def main():
     checks = [("Python tests", [sys.executable, "-m", "pytest", "tests", "-q"])]
     if shutil.which("node"):
         checks.append(("Browser JavaScript syntax", ["node", "--check", "frontend/app.js"]))
+        checks.append(("Language catalogue syntax", ["node", "--check", "frontend/i18n.js"]))
     else:
         print("Node is unavailable: JavaScript syntax check not run.")
     for label, command in checks:

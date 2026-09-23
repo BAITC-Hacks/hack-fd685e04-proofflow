@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#111a24">
+  <meta name="description" content="ProofFlow — рабочее место для проверки рекомендаций по пополнению склада.">
+  <title>ProofFlow — закупки и пополнение</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/static/i18n.js" defer></script>
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="Основная навигация">
+      <a class="brand" href="#overview" aria-label="ProofFlow — главная">
+        <span class="brand-mark" aria-hidden="true">P<span>·</span></span>
+        <span class="brand-copy"><strong>ProofFlow</strong><small>PROCUREMENT DESK</small></span>
+      </a>
+      <div class="sidebar-label">РАБОЧАЯ ОБЛАСТЬ</div>
+      <nav class="main-nav">
+        <a class="nav-link active" href="#overview"><span class="nav-icon" aria-hidden="true">◫</span>Обзор</a>
+        <a class="nav-link" href="#orders"><span class="nav-icon" aria-hidden="true">⇄</span>Рекомендации</a>
+        <a class="nav-link" href="#data-source"><span class="nav-icon" aria-hidden="true">▤</span>Данные</a>
+        <a class="nav-link" href="#policies"><span class="nav-icon" aria-hidden="true">⚙</span>Параметры</a>
+      </nav>
+      <div class="sidebar-bottom">
+        <div class="connection-card">
+          <span id="api-indicator" class="status-dot" aria-hidden="true"></span>
+          <div><strong id="api-status">Проверяем сервис</strong><small id="api-version">Подключение к API</small></div>
+        </div>
+        <div class="sidebar-footnote">Рекомендации требуют проверки и подтверждения менеджером.</div>
+      </div>
+    </aside>
+
+    <main class="main-content" id="overview">
+      <header class="topbar">
+        <div class="breadcrumbs"><span>ЭЛЕКТРОКОМПЛЕКТ</span><i aria-hidden="true">/</i><strong>Пополнение склада</strong></div>
+        <div class="topbar-actions">
+          <label class="visually-hidden" for="language-select">Language / Тіл / Язык</label>
+          <select id="language-select" class="select-control locale-control" aria-label="Language / Тіл / Язык"><option value="ru">Русский</option><option value="kk">Қазақша</option><option value="en">English</option></select>
+          <button id="theme-toggle" class="button button-quiet button-small" type="button" aria-pressed="false">◐</button>
+          <span id="run-stamp" class="run-stamp">Расчёт ещё не выполнен</span>
+          <button class="button button-quiet button-small" id="refresh-button" type="button" title="Повторно загрузить данные и проверить сервис">Обновить</button>
+        </div>
+      </header>
+
+      <div class="page-wrap">
+        <section class="hero-row" aria-labelledby="page-title">
+          <div>
+            <div class="eyebrow"><span class="eyebrow-line"></span>ПЛАНИРОВАНИЕ ЗАКУПОК</div>
+            <h1 id="page-title">Пополнение <span>без всплесков</span></h1>
+            <p class="hero-subtitle">Расчёт потребности по истории продаж, текущим остаткам и подтверждённым поставкам.</p>
+          </div>
+          <div class="hero-actions">
+            <button class="button button-outline" id="demo-button" type="button"><span aria-hidden="true">▷</span> Загрузить демо</button>
+            <button class="button button-primary" id="upload-button" type="button"><span aria-hidden="true">↑</span> Загрузить данные</button>
+            <input id="file-input" type="file" accept=".csv,.xlsx,.json,.zip" multiple hidden>
+          </div>
+        </section>
+
+        <div id="alert-region" class="alert-region" aria-live="polite"></div>
+
+        <section id="data-source" class="source-strip panel" aria-labelledby="source-title">
+          <div class="source-icon" aria-hidden="true">▤</div>
+          <div class="source-copy">
+            <strong id="source-title">Источник данных</strong>
+            <span id="source-label">Данные ещё не загружены</span>
+          </div>
+          <div id="dataset-badges" class="source-badges"></div>
+          <button class="text-button" id="choose-file-button" type="button">Выбрать файлы <span aria-hidden="true">↗</span></button>
+        </section>
+
+        <section class="products-panel panel" aria-labelledby="products-title">
+          <div class="products-head">
+            <div><span class="field-label">ИСХОДНЫЕ ПАРАМЕТРЫ</span><h2 id="products-title">Товары и сроки поставки</h2><p>Остаток, срок, партию и рост можно скорректировать перед новым расчётом. Рост — доля (0,1 = +10%). Правки действуют до обновления страницы.</p></div>
+            <div class="products-tools"><label class="visually-hidden" for="product-search">Поиск по товарам</label><input id="product-search" class="search-control" type="search" placeholder="Поиск SKU или товара" autocomplete="off"><span id="product-range" class="range-indicator">—</span></div>
+          </div>
+          <div id="products-empty" class="products-empty">Загрузите данные, чтобы проверить параметры товаров.</div>
+          <div id="products-table-wrap" class="table-scroll" hidden><table class="product-table"><thead><tr><th>АРТИКУЛ / ТОВАР</th><th>ПОСТАВЩИК / КАТЕГОРИЯ</th><th>СКЛАД</th><th>ОСТАТОК</th><th>СРОК, ДН.</th><th>МИН. ПАРТИЯ</th><th>РОСТ</th></tr></thead><tbody id="products-body"></tbody></table></div>
+          <div id="products-pager" class="products-pager" hidden><button id="products-prev" class="button button-quiet button-small" type="button">← Назад</button><span id="products-page-label">1 / 1</span><button id="products-next" class="button button-quiet button-small" type="button">Далее →</button></div>
+        </section>
+
+        <section class="control-panel panel" aria-label="Фильтры и расчёт">
+          <div class="filter-block">
+            <label class="field-label" for="warehouse-filter">СКЛАД</label>
+            <select id="warehouse-filter" class="select-control"><option value="">Все склады</option></select>
+          </div>
+          <div class="filter-block">
+            <label class="field-label" for="category-filter">КАТЕГОРИЯ</label>
+            <select id="category-filter" class="select-control"><option value="">Все категории</option></select>
+          </div>
+          <div class="filter-block">
+            <label class="field-label" for="supplier-filter">ПОСТАВЩИК</label>
+            <select id="supplier-filter" class="select-control"><option value="">Все поставщики</option></select>
+          </div>
+          <div class="control-divider" aria-hidden="true"></div>
+          <div class="settings-inline" id="settings-inline">
+            <label class="field-label" for="review-days">ГОРИЗОНТ ЗАКАЗА</label>
+            <div class="number-with-unit"><input id="review-days" type="number" min="0" step="1" value="14" inputmode="numeric"><span>дн.</span></div>
+          </div>
+          <button class="button button-primary calculate-button" id="calculate-button" type="button" disabled><span aria-hidden="true">⟳</span> Рассчитать</button>
+        </section>
+
+        <section id="warning-panel" class="warning-panel panel" aria-live="polite" hidden><div class="warning-heading"><span class="warning-glyph">!</span><strong>Ограничения исходных данных и расчёта</strong></div><ul id="warning-list"></ul></section>
+
+        <section class="summary-grid" aria-label="Сводка расчёта">
+          <article class="metric-card panel">
+            <div class="metric-top"><span>ПОЗИЦИЙ К ПОПОЛНЕНИЮ</span><span class="metric-symbol" aria-hidden="true">▦</span></div>
+            <div class="metric-value" id="metric-items">—</div>
+            <div class="metric-foot" id="metric-items-foot">Загрузите данные для расчёта</div>
+          </article>
+          <article class="metric-card panel">
+            <div class="metric-top"><span>ПОСТАВЩИКИ</span><span class="metric-symbol" aria-hidden="true">◇</span></div>
+            <div class="metric-value" id="metric-suppliers">—</div>
+            <div class="metric-foot">В текущем результате</div>
+          </article>
+          <article class="metric-card panel metric-highlight">
+            <div class="metric-top"><span>ЧЕРНОВИК ЗАКАЗА</span><span class="metric-symbol" aria-hidden="true">↗</span></div>
+            <div class="metric-value metric-total" id="metric-total">—</div>
+            <div class="metric-foot">Сумма рекомендаций по ценам из данных</div>
+          </article>
+          <article class="metric-card panel">
+            <div class="metric-top"><span>ТРЕБУЮТ ВНИМАНИЯ</span><span class="metric-symbol warning-symbol" aria-hidden="true">!</span></div>
+            <div class="metric-value" id="metric-critical">—</div>
+            <div class="metric-foot">Критические позиции в результате</div>
+          </article>
+        </section>
+
+        <section id="orders" class="orders-section" aria-labelledby="orders-title">
+          <div class="section-heading">
+            <div>
+              <div class="eyebrow"><span class="eyebrow-line"></span>РАСЧЁТНАЯ ВЫБОРКА</div>
+              <h2 id="orders-title">Рекомендации поставщикам</h2>
+              <p id="orders-caption" class="section-caption">Загрузите демо-данные или свои файлы, затем запустите расчёт.</p>
+            </div>
+            <div class="export-actions">
+              <label class="field-label visually-hidden" for="export-supplier">Поставщик для экспорта</label>
+              <select id="export-supplier" class="select-control compact-select" aria-label="Фильтр поставщика для экспорта"><option value="">Все поставщики</option></select>
+              <button id="export-csv" class="button button-quiet button-small" type="button" disabled>CSV ↓</button>
+              <button id="export-xlsx" class="button button-quiet button-small" type="button" disabled>XLSX ↓</button>
+              <button id="approve-button" class="button button-primary button-small" type="button" disabled>Утвердить заказ</button>
+            </div>
+          </div>
+
+          <div id="loading-state" class="loading-state panel" hidden>
+            <span class="spinner" aria-hidden="true"></span><span id="loading-message">Выполняем расчёт…</span>
+          </div>
+
+          <div id="orders-empty" class="empty-state panel">
+            <div class="empty-art" aria-hidden="true"><span>▤</span><i>＋</i><span>↗</span></div>
+            <h3>Сначала нужны исходные данные</h3>
+            <p>Загрузите подготовленный демонстрационный набор или файлы продаж, остатков и поставок в пути. До расчёта таблица заказов не формируется.</p>
+            <button class="button button-outline" type="button" data-action="demo">Открыть демо-набор</button>
+          </div>
+          <div id="supplier-groups" class="supplier-groups" aria-live="polite"></div>
+        </section>
+
+        <section id="policies" class="policies-section panel">
+          <details id="policy-details">
+            <summary>
+              <span class="policy-summary-icon" aria-hidden="true">⚙</span>
+              <span class="policy-summary-copy"><strong>Параметры расчёта</strong><small>Настройки горизонта и политики категорий</small></span>
+              <span class="summary-chevron" aria-hidden="true">⌄</span>
+            </summary>
+            <div class="policy-content">
+              <div class="policy-intro">Значения ниже — редактируемые параметры модели, а не нормативы задачи. Изменения попадут в следующий расчёт.</div>
+              <div class="global-settings-grid">
+                <label class="setting-field"><span>Период пересмотра заказа</span><div class="number-with-unit"><input id="policy-review-days" type="number" min="0" step="1" value="14"><span>дней</span></div></label>
+                <label class="setting-field"><span>Страховой запас по умолчанию</span><div class="number-with-unit"><input id="safety-days" type="number" min="0" step="1" value="7"><span>дней</span></div></label>
+                <label class="setting-field"><span>Порог единичного всплеска</span><div class="number-with-unit"><input id="outlier-multiplier" type="number" min="1" step="0.1" value="4"><span>×</span></div></label>
+              </div>
+              <div class="category-policy-head"><div><strong>Политики категорий</strong><p>Опциональная поправка к росту и страховому запасу.</p></div><button id="add-policy" type="button" class="text-button">＋ Добавить категорию</button></div>
+              <div id="category-policies" class="category-policies"><p class="muted-copy">Загрузите данные, чтобы настроить политики категорий.</p></div>
+              <div class="policy-footer"><span>Решение о закупке всегда остаётся за менеджером.</span><button class="button button-primary button-small" id="recalculate-settings" type="button" disabled>Пересчитать</button></div>
+            </div>
+          </details>
+        </section>
+
+        <footer class="page-footer"><span>ProofFlow <span class="footer-separator">·</span> Электрокомплект</span><span>Рекомендация ≠ размещённый заказ</span></footer>
+      </div>
+    </main>
+  </div>
+
+  <dialog id="explain-dialog" class="app-dialog">
+    <div class="dialog-top"><div><div class="eyebrow"><span class="eyebrow-line"></span>ПОЯСНЕНИЕ РАСЧЁТА</div><h2 id="explain-title">Позиция</h2><p id="explain-meta" class="section-caption"></p></div><button class="icon-button" type="button" data-close="explain-dialog" aria-label="Закрыть">×</button></div>
+    <div id="explain-content" class="explain-content"></div>
+  </dialog>
+
+  <dialog id="approval-dialog" class="app-dialog approval-dialog">
+    <form id="approval-form" method="dialog">
+      <div class="dialog-top"><div><div class="eyebrow"><span class="eyebrow-line"></span>КОНТРОЛЬ МЕНЕДЖЕРА</div><h2>Подтвердить черновик?</h2></div><button class="icon-button" type="button" data-close="approval-dialog" aria-label="Закрыть">×</button></div>
+      <p class="approval-warning">Подтверждение фиксирует выбранные количества в системе. Заказы поставщикам автоматически не отправляются.</p>
+      <div class="approval-preview" id="approval-preview"></div>
+      <label id="missing-inputs-label" class="approval-warning acknowledgement" hidden><input id="acknowledge-missing-inputs" type="checkbox"><span data-i18n="acknowledge">Я проверил ограничения: у части позиций не подтверждены остатки или сроки поставки. Принимаю ответственность за утверждение этих рекомендаций.</span></label>
+      <label class="setting-field reviewer-field"><span>Имя ответственного менеджера</span><input id="reviewer-name" type="text" maxlength="120" autocomplete="name" required placeholder="Введите имя"></label>
+      <div class="dialog-actions"><button class="button button-quiet" type="button" data-close="approval-dialog">Вернуться к проверке</button><button class="button button-primary" id="confirm-approval" type="submit">Подтвердить выбор</button></div>
+    </form>
+  </dialog>
+
+  <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
+</body>
+</html>

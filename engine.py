@@ -7,12 +7,16 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import date, timedelta
+from decimal import Decimal, ROUND_HALF_UP
 from math import ceil, isfinite
 from statistics import median
 from typing import Any
 
+from localization import message, normalize_locale
+
 
 DEFAULT_SETTINGS = {
+    "locale": "ru",
     "review_days": 14,
     "safety_days": 7,
     "outlier_multiplier": 4.0,
@@ -195,8 +199,9 @@ def _calc_product(product: dict[str, Any], dataset: dict[str, Any], as_of: date,
             f"products[{sku}].horizon exceeds {MAX_HORIZON_DAYS} days "
             "(lead_days + review_days + safety_days)")
     local_warnings: list[str] = []
+    locale = settings["locale"]
     if not product.get("supplier"):
-        local_warnings.append("Поставщик не указан: проверьте позицию в очереди без назначенного поставщика")
+        local_warnings.append(message(locale, "supplier_missing"))
 
     tx_by_day_client: dict[date, dict[str, float]] = defaultdict(lambda: defaultdict(float))
     known_clients: set[str] = set()
@@ -263,6 +268,10 @@ def _calc_product(product: dict[str, Any], dataset: dict[str, Any], as_of: date,
             # Anonymous daily totals cannot prove a single-order/customer
             # spike. Do not silently remove their legitimate demand.
             continue
+        # Intermittent products have a zero all-day median. Equal-sized weekly
+        # purchases remain regular demand even when every buyer is different.
+        if largest <= active_median * settings["outlier_multiplier"]:
+            continue
         if client not in actual_client_ids and (
                 len(active_values) < 14 or largest <= document_threshold):
             continue
@@ -289,14 +298,12 @@ def _calc_product(product: dict[str, Any], dataset: dict[str, Any], as_of: date,
         events.append({"date": history_dates[i].isoformat(), "client_id": client,
                        "raw_quantity": round(total, 6), "retained_quantity": round(expected, 6),
                        "excluded_quantity": round(removed, 6), "client_share": round(share, 4),
-                       "reason": "Разовый выброс за день: преобладает один клиент или заказ; повторного пика в том же месяце нет"})
+                       "reason": message(locale, "spike_reason")})
         if client not in actual_client_ids:
             document_spike_count += 1
 
     if document_spike_count:
-        local_warnings.append(
-            f"{document_spike_count} разовых всплесков связаны с номером документа, "
-            "а не с идентификатором клиента; проверьте исключения в деталях")
+        local_warnings.append(message(locale, "document_spikes", count=document_spike_count))
 
     cleaned = [max(0.0, v - excluded_by_index.get(i, 0.0))
                for i, v in enumerate(raw_values)]
@@ -332,9 +339,8 @@ def _calc_product(product: dict[str, Any], dataset: dict[str, Any], as_of: date,
                         "excluded_quantity": round(excluded_by_index.get(i, 0.0), 6),
                         "stockout": is_stockout[i], "excluded": i in excluded_by_index})
     if sparse_reference_days:
-        local_warnings.append(
-            f"Для {sparse_reference_days} дней отсутствия товара использована общая медиана: "
-            f"наблюдений за тот же день недели меньше {settings['stockout_min_reference_days']}")
+        local_warnings.append(message(locale, "sparse_stockout", days=sparse_reference_days,
+                                      minimum=settings["stockout_min_reference_days"]))
 
     seasonality = _seasonal_indices(
         [{"date": r["date"], "demand": r["adjusted_demand"],
@@ -427,39 +433,37 @@ def _calc_product(product: dict[str, Any], dataset: dict[str, Any], as_of: date,
     adjusted_daily = _mean([r["adjusted_demand"] for r in history])
     warnings_for_row = sorted(set(local_warnings))
     if not tx_by_day_client:
-        warnings_for_row.append("Нет истории продаж с датами: прогноз спроса построить невозможно")
+        warnings_for_row.append(message(locale, "no_sales"))
     elif adjusted_daily == 0:
-        warnings_for_row.append(
-            "В истории нет положительного спроса: без дополнительных данных рекомендация равна нулю")
+        warnings_for_row.append(message(locale, "no_positive_demand"))
     if local_warnings:
         warnings.extend(f"{sku}/{warehouse}: {w}" for w in warnings_for_row)
     if not tx_by_day_client or adjusted_daily == 0:
         warnings.extend(w for w in warnings_for_row if w not in warnings)
 
-    urgency_label = {"critical": "критическая", "high": "высокая",
-                     "normal": "обычная", "covered": "запас покрывает спрос"}[urgency]
-    source_label = "синтетические данные" if dataset.get("metadata", {}).get("synthetic", False) else "загруженные данные"
-    stockout_label = stockout_date or "не ожидается в пределах горизонта расчёта"
-    explanation = (
-        f"Источник: {source_label}. "
-        f"Прогноз спроса {forecast_need:.2f} ед. на {horizon} дн. "
-        f"(поставка {lead_days} + пересмотр {review_days} + страховой запас {safety_days}); "
-        f"остаток {on_hand:.2f}; поступления до конца горизонта {inbound_in_horizon:.2f}; "
-        f"максимальный дефицит по датам {net_need:.2f} "
-        f"(дефицит в конце горизонта {terminal_net_need:.2f}); "
-        f"минимальная партия {moq:g}, кратность упаковки {pack_size:g}; рекомендуем {recommended:g}. "
-        f"Скорректированный исторический спрос {adjusted_daily:.3f} ед./день; "
-        f"оценка упущенного спроса {lost_total:.2f} ед.; "
-        f"исключено выбросов {sum(excluded_by_index.values()):.2f} ед.; "
-        f"сезонность ×{mean_seasonality:.3f}, тренд ×{trend_factor:.3f}, прирост ×{growth_factor:.3f}. "
-        f"Срочность: {urgency_label}; ожидаемый дефицит без нового заказа: {stockout_label}."
+    urgency_label = message(locale, f"urgency_{urgency}")
+    source_label = message(locale, "source_synthetic" if dataset.get("metadata", {}).get("synthetic", False)
+                           else "source_uploaded")
+    stockout_label = stockout_date or message(locale, "no_stockout_forecast")
+    explanation = message(
+        locale, "explanation", source=source_label, forecast_need=forecast_need,
+        horizon=horizon, lead_days=lead_days, review_days=review_days,
+        safety_days=safety_days, on_hand=on_hand,
+        inbound_in_horizon=inbound_in_horizon, net_need=net_need,
+        terminal_net_need=terminal_net_need, moq=moq, pack_size=pack_size,
+        recommended=recommended, adjusted_daily=adjusted_daily,
+        lost_total=lost_total, excluded_quantity=sum(excluded_by_index.values()),
+        mean_seasonality=mean_seasonality, trend_factor=trend_factor,
+        growth_factor=growth_factor, urgency=urgency_label, stockout=stockout_label,
     )
     return {
         "sku": sku, "name": product.get("name", sku), "supplier": product.get("supplier", ""),
         "category": product.get("category", ""), "warehouse": warehouse, "unit": product.get("unit", "pcs"),
         "on_hand": on_hand, "inbound_quantity": inbound_in_horizon, "lead_days": lead_days,
         "recommended_quantity": recommended, "unit_price": unit_price,
-        "amount": round(recommended * unit_price, 2), "daily_demand": round(_mean([r["demand"] for r in forecast]), 6),
+        "amount": float((Decimal(str(recommended)) * Decimal(str(unit_price))).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP)),
+        "daily_demand": round(_mean([r["demand"] for r in forecast]), 6),
         "raw_daily_demand": round(raw_daily, 6), "lost_demand": round(lost_total, 6),
         "excluded_quantity": round(sum(excluded_by_index.values()), 6), "excluded_events": events,
         "seasonality_factor": round(mean_seasonality, 6), "trend_factor": round(trend_factor, 6),
@@ -495,14 +499,17 @@ def calculate(dataset: dict[str, Any]) -> dict[str, Any]:
                          ("inbound", MAX_INBOUND)):
         if len(dataset.get(field) or []) > limit:
             raise ValueError(f"{field} exceeds {limit} rows")
-    if dataset.get("metadata") is not None and not isinstance(dataset["metadata"], dict):
+    if not isinstance(dataset.get("metadata", {}), dict):
         raise ValueError("metadata must be an object")
     settings = dict(DEFAULT_SETTINGS)
     if dataset.get("settings") is not None and not isinstance(dataset["settings"], dict):
         raise ValueError("settings must be an object")
-    if dataset.get("category_policies") is not None and not isinstance(dataset["category_policies"], dict):
+    if not isinstance(dataset.get("category_policies", {}), dict):
         raise ValueError("category_policies must be an object")
+    if any(not isinstance(policy, dict) for policy in dataset.get("category_policies", {}).values()):
+        raise ValueError("each category policy must be an object")
     settings.update(dataset.get("settings") or {})
+    settings["locale"] = normalize_locale(settings["locale"])
     for key in ("review_days", "safety_days", "stockout_min_reference_days",
                 "seasonality_min_observations", "trend_window_days"):
         value = _number(settings[key], f"settings.{key}", minimum=0)
@@ -555,11 +562,10 @@ def calculate(dataset: dict[str, Any]) -> dict[str, Any]:
                                     "event_id": row.get("event_id")})
             earliest_by_key[k] = min(d, earliest_by_key.get(k, d))
     if ignored_future_sales:
-        global_warnings.append(
-            f"Не учтено продаж после расчётной даты {as_of}: {ignored_future_sales}")
+        global_warnings.append(message(settings["locale"], "future_sales", as_of=as_of,
+                                       count=ignored_future_sales))
     if ignored_unknown_sales:
-        global_warnings.append(
-            f"Не учтено продаж для неизвестного артикула или склада: {ignored_unknown_sales}")
+        global_warnings.append(message(settings["locale"], "unknown_sales", count=ignored_unknown_sales))
 
     stockouts_by_key: dict[tuple[str, str], list[tuple[date, date]]] = defaultdict(list)
     stockout_expansion_days = 0
@@ -584,11 +590,11 @@ def calculate(dataset: dict[str, Any]) -> dict[str, Any]:
                     raise ValueError(
                         f"stockout intervals exceed {MAX_STOCKOUT_EXPANSION_DAYS} expanded days")
             else:
-                global_warnings.append(
-                    f"Период отсутствия товара stockouts[{i}] начинается после расчётной даты {as_of}; не учтён")
+                global_warnings.append(message(settings["locale"], "future_stockout", index=i,
+                                               as_of=as_of))
         else:
-            global_warnings.append(
-                f"Период отсутствия товара stockouts[{i}]: неизвестный артикул/склад {k[1]}/{k[0]}; не учтён")
+            global_warnings.append(message(settings["locale"], "unknown_stockout", index=i,
+                                           sku=k[1], warehouse=k[0]))
 
     inbound_by_key: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     for i, row in enumerate(dataset.get("inbound", [])):
@@ -600,14 +606,13 @@ def calculate(dataset: dict[str, Any]) -> dict[str, Any]:
         if k in products_by_key:
             if eta <= as_of:
                 # Past receipts are not silently applied to today's on-hand.
-                global_warnings.append(
-                    f"Поставка inbound[{i}] с датой {eta} не позже расчётной даты; "
-                    "не учтена в прогнозе")
+                global_warnings.append(message(settings["locale"], "past_inbound", index=i,
+                                               eta=eta))
             else:
                 inbound_by_key[k].append({"eta": eta.isoformat(), "quantity": qty})
         else:
-            global_warnings.append(
-                f"Поставка inbound[{i}]: неизвестный артикул/склад {k[1]}/{k[0]}; не учтена")
+            global_warnings.append(message(settings["locale"], "unknown_inbound", index=i,
+                                           sku=k[1], warehouse=k[0]))
 
     history_points = 0
     for k in products_by_key:
@@ -637,6 +642,6 @@ def calculate(dataset: dict[str, Any]) -> dict[str, Any]:
         group["total_amount"] += item["amount"]
     supplier_groups = [dict(groups[supplier], total_amount=round(groups[supplier]["total_amount"], 2))
                        for supplier in sorted(groups)]
-    return {"as_of": as_of.isoformat(), "rows": rows, "summary": summary,
+    return {"as_of": as_of.isoformat(), "locale": settings["locale"], "rows": rows, "summary": summary,
             "supplier_groups": supplier_groups, "warnings": sorted(set(global_warnings)),
             "methodology": "deterministic-provisional-v1"}

@@ -10,13 +10,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 from uuid import uuid4
+from zipfile import BadZipFile
 
 from fastapi import FastAPI, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, StrictFloat
+from openpyxl.utils.exceptions import InvalidFileException
 
 import exports
+import evidence
 import storage
 
 ROOT = Path(__file__).parent
@@ -179,6 +182,8 @@ async def import_data(request: Request):
                 return source_response(data)
     except HTTPException:
         raise
+    except (BadZipFile, InvalidFileException) as exc:
+        raise HTTPException(422, "Файл ZIP/XLSX повреждён или имеет неверный формат. Повторно выгрузите исходные данные.") from exc
     except (ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
         raise HTTPException(422, str(exc)) from exc
 
@@ -284,6 +289,22 @@ def item_detail(run_id: str, sku: str, warehouse: str):
     if item is None:
         raise HTTPException(404, "Позиция расчёта не найдена")
     return item
+
+
+@app.get("/api/runs/{run_id}/evidence")
+def evidence_report(run_id: str):
+    run = require_run(run_id)
+    try:
+        report = evidence.build_evidence(run)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    payload = json.dumps(report, ensure_ascii=False, sort_keys=True, indent=2,
+                         allow_nan=False).encode("utf-8")
+    safe_id = "".join(c for c in run_id if c.isascii() and c.isalnum())[:16] or "run"
+    return Response(payload, media_type="application/json", headers={
+        "Content-Disposition": f'attachment; filename="proofflow-{safe_id}-evidence.json"',
+        "Cache-Control": "no-store",
+    })
 
 
 @app.post("/api/runs/{run_id}/approve")

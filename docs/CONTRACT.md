@@ -15,6 +15,7 @@ JSON object: `as_of` (ISO date), `products`, `sales`, `stockouts`, `inbound`,
 - category_policies: category -> {growth: fractional uplift, safety_days: days}.
 - settings: review_days=14, safety_days=7, outlier_multiplier=4; explicit editable
   engineering defaults, not task mandated numbers.
+  `locale` is `ru` (default), `kk`, or `en`; it changes engine text only.
 - metadata: source_label, synthetic (bool), warnings (list of strings).
 
 Daily input is canonical. If partner inputs are monthly totals, preserve their
@@ -62,10 +63,17 @@ Raw partner files remain local under ignored private_data. No outbound network.
 - GET /api/runs/{run_id}/item?sku=...&warehouse=... -> detailed history,
   forecast and diagnostic fields for one item; list rows stay compact.
 - POST /api/runs/{run_id}/approve -> {quantities: {row_key: quantity},
-  reviewer: string}; validates quantities and records approval; never sends orders.
+  reviewer: string, acknowledge_missing_inputs?: boolean}; validates quantities
+  and records approval; never sends orders. Real runs with unconfirmed stock
+  or lead times require explicit acknowledgement, saved with the approval.
   row_key = warehouse + '::' + sku. Return {approval_id, status, approved_at}.
 - GET /api/runs/{run_id}/export?format=csv|xlsx -> attachment of visible calculated
   rows, optional supplier query, clearly marks draft versus approved quantities.
+
+Rows include `price_known` and `input_provenance`. Unknown prices/amounts are
+blank in exports. `summary.total_amount_complete=false` and
+`summary.unpriced_order_lines` distinguish an incomplete budget from a real
+zero-value order.
 
 Static frontend in frontend/index.html, app.js, styles.css served at /.
 Russian procurement workbench: upload/demo, filters, calculation settings,

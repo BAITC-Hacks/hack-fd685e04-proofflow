@@ -24,3 +24,13 @@ confirmed official schedule. Each checkpoint includes a real tested increment.
 No automated supplier sending. Partner files remain local. Any synthetic examples
 and reconstructed monthly data must be identified as such. Main functionality
 is written during the competition in this repository.
+
+## Verified subsequent checkpoints
+
+- `66873a8`: 14:56:50 UTC+5, second-hour engine/API checkpoint.
+- `bebf755`: 15:55:58 UTC+5, third-hour canonical importer and source coverage.
+- `0abf393`: pushed and remote-confirmed at 16:34 UTC+5. Real partner workbook
+  adapter, seasonal correction, conservative document-spike handling, API and
+  price-provenance safeguards, README/architecture. Local preflight: 72 passed,
+  one optional stress test skipped. Frontend was still untracked at this point;
+  this commit alone was not the final runnable submission.
