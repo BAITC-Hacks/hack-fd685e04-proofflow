@@ -36,10 +36,12 @@ def encode(value):
 
 
 def save_dataset(dataset):
+    from quality import assess_dataset
     # Keep a small separate record for page reloads; parsing the full sales
     # archive just to render the product controls would waste time and memory.
     preview = {key: value for key, value in dataset.items() if key not in {"sales", "stockouts", "inbound"}}
     preview["_preview"] = True
+    preview["quality"] = assess_dataset(dataset)
     preview["metadata"] = {
         **dataset.get("metadata", {}),
         "record_counts": {key: len(dataset.get(key, [])) for key in ("products", "sales", "stockouts", "inbound")},

@@ -88,9 +88,11 @@ def health():
 
 
 def source_response(dataset):
+    from quality import assess_dataset
     metadata = dataset.get("metadata", {})
     preview = {key: value for key, value in dataset.items() if key not in {"sales", "stockouts", "inbound"}}
     preview["_preview"] = True
+    preview["quality"] = assess_dataset(dataset)
     preview["metadata"] = {**metadata, "record_counts": {key: len(dataset.get(key, [])) for key in ("products", "sales", "stockouts", "inbound")}}
     return {"dataset": preview, "source_label": metadata.get("source_label", "Загруженные данные")}
 
