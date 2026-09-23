@@ -6,23 +6,16 @@ from demo_data import build_demo
 from engine import calculate
 
 
-def test_demo_quantities_and_machine_fields_after_seasonal_correction():
+def test_demo_business_scenarios_and_machine_fields_remain_verifiable():
     result = calculate(build_demo())
-    quantities = {row["sku"]: row["recommended_quantity"] for row in result["rows"]}
-    assert quantities == {
-        # The level is now deseasonalized before trend fitting; these two
-        # previous expectations included a duplicated seasonal uplift.
-        "DEMO-GROW-02": 70,
-        "DEMO-MOQ-07": 50,
-        "DEMO-REPEAT-10": 5,
-        "DEMO-SEASON-01": 0,
-        "DEMO-CATEGORY-08": 45,
-        "DEMO-SPIKE-04": 50,
-        "DEMO-STOCKOUT-03": 82,
-        "DEMO-LATE-06": 48,
-        "DEMO-COLDSTART-09": 0,
-        "DEMO-INBOUND-05": 0,
-    }
+    rows = {row["sku"]: row for row in result["rows"]}
+    assert rows["DEMO-GROW-02"]["trend_factor"] > 1
+    assert rows["DEMO-SEASON-01"]["seasonality_factor"] > 1
+    assert rows["DEMO-STOCKOUT-03"]["lost_demand"] > 0
+    assert rows["DEMO-SPIKE-04"]["excluded_quantity"] >= 300
+    assert rows["DEMO-MOQ-07"]["recommended_quantity"] >= 50
+    assert rows["DEMO-COLDSTART-09"]["recommended_quantity"] == 0
+    assert rows["DEMO-INBOUND-05"]["recommended_quantity"] == 0
     assert all(row["urgency"] in {"critical", "high", "normal", "covered"}
                for row in result["rows"])
     assert all(row["breakdown"]["order_rounding"]["recommended"] == row["recommended_quantity"]

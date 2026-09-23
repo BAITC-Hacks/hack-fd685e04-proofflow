@@ -1,0 +1,22 @@
+// One browser-session state. No partner data or credentials are persisted here.
+export const state = {
+  dataset: null,
+  sourceLabel: "Данные ещё не загружены",
+  result: null,
+  edits: new Map(),
+  approval: null,
+  busy: false,
+  rowsByKey: new Map(),
+  toastTimer: null,
+  productPage: 0,
+  productQuery: "",
+  orderQuery: "",
+  supplierPages: new Map(),
+  supplierTotals: new Map(),
+  supplierLineCounts: new Map(),
+  totalAmount: 0,
+  orderLineCount: 0,
+  exported: false,
+  approvalOpen: false,
+  inputRevision: 0,
+};

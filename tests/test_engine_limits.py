@@ -33,6 +33,25 @@ def test_horizon_at_limit_is_valid_and_one_day_over_rejected():
         calculate(data)
 
 
+@pytest.mark.parametrize("field,value", [
+    ("lead_days", 0.9),
+    ("lead_days", 7.5),
+])
+def test_fractional_lead_time_is_rejected_instead_of_truncated(field, value):
+    data = fixture()
+    data["products"][0][field] = value
+    with pytest.raises(ValueError, match="integer number of days"):
+        calculate(data)
+
+
+def test_fractional_category_safety_days_is_rejected():
+    data = fixture()
+    data["products"][0]["category"] = "C"
+    data["category_policies"] = {"C": {"safety_days": 1.9}}
+    with pytest.raises(ValueError, match="integer number of days"):
+        calculate(data)
+
+
 def test_ten_calendar_years_allowed_but_older_history_rejected():
     data = fixture()
     data["sales"][0]["date"] = "2016-09-23"

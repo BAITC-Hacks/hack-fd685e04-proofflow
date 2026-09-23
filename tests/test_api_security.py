@@ -70,3 +70,45 @@ def test_synthetic_demo_approval_does_not_require_real_data_acknowledgement():
             approved = client.post(f"/api/runs/{run['run_id']}/approve", json={"reviewer": "Demo manager"})
             assert approved.status_code == 200, approved.text
             assert approved.json()["acknowledged_missing_inputs"] is False
+
+
+def test_unconfirmed_numeric_price_is_excluded_from_all_monetary_totals(tmp_path, monkeypatch):
+    monkeypatch.setenv("PROOFFLOW_DATA_DIR", str(tmp_path))
+    products = [
+        {"sku": "KNOWN", "warehouse": "W", "supplier": "Priced", "category": "C",
+         "on_hand": 0, "lead_days": 0, "unit_price": 2.675,
+         "provenance": {"on_hand": "observed", "lead_days": "observed", "unit_price": "observed"}},
+        {"sku": "UNKNOWN", "warehouse": "W", "supplier": "Unpriced", "category": "C",
+         "on_hand": 0, "lead_days": 0, "unit_price": 999,
+         "provenance": {"on_hand": "observed", "lead_days": "observed", "unit_price": "missing"}},
+    ]
+    sales = [{"date": "2026-09-22", "sku": sku, "warehouse": "W", "quantity": 1}
+             for sku in ("KNOWN", "UNKNOWN")]
+    dataset = {"as_of": "2026-09-22", "products": products, "sales": sales,
+               "settings": {"review_days": 1, "safety_days": 0},
+               "metadata": {"synthetic": False}}
+    with TestClient(app) as client:
+        response = client.post("/api/calculate", json={"dataset": dataset})
+        assert response.status_code == 200, response.text
+        run = response.json()
+        rows = {row["sku"]: row for row in run["rows"]}
+        assert rows["KNOWN"]["price_known"] is True
+        assert rows["UNKNOWN"]["price_known"] is False
+        assert rows["UNKNOWN"]["recommended_quantity"] > 0
+        assert rows["UNKNOWN"]["amount"] is None
+        assert run["summary"]["total_amount"] == rows["KNOWN"]["amount"]
+        assert run["summary"]["unpriced_order_lines"] == 1
+        assert run["summary"]["total_amount_complete"] is False
+        groups = {group["supplier"]: group for group in run["supplier_groups"]}
+        assert groups["Priced"]["total_amount"] == rows["KNOWN"]["amount"]
+        assert groups["Unpriced"]["total_amount"] == 0
+        evidence = client.get(f"/api/runs/{run['run_id']}/evidence")
+        assert evidence.status_code == 200
+        report = evidence.json()
+        assert report["reconciliation"]["status"] == "pass"
+        assert report["recommended"]["known_amount"] == "2.68"
+        assert report["recommended"]["unpriced_order_lines"] == 1
+        exported = client.get(f"/api/runs/{run['run_id']}/export?format=csv")
+        lines = list(csv.reader(io.StringIO(exported.content.decode("utf-8-sig")), delimiter=";"))
+        unknown_line = next(line for line in lines[1:] if line[3] == "UNKNOWN")
+        assert unknown_line[8:10] == ["", ""]

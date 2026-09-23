@@ -21,6 +21,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("files", nargs="*", help="Optional local partner files/directories; default is synthetic demo")
     parser.add_argument("--locale", choices=("ru", "kk", "en"), default="ru")
+    parser.add_argument("--expect-sales", type=int, help="Fail if the imported sales count differs")
+    parser.add_argument("--expect-products", type=int, help="Fail if the imported product count differs")
     args = parser.parse_args()
     with socket.socket() as port_socket:
         port_socket.bind(("127.0.0.1", 0))
@@ -46,7 +48,7 @@ def main():
                         time.sleep(0.1)
                 else:
                     raise RuntimeError("Server did not become healthy")
-                for route in ("/", "/app.js", "/styles.css"):
+                for route in ("/", "/app.js", "/styles.css", "/static/i18n.js"):
                     client.get(route).raise_for_status()
                 print("Server and interface assets: OK", flush=True)
                 if args.files:
@@ -68,6 +70,10 @@ def main():
                     loaded = client.post("/api/demo")
                 loaded.raise_for_status()
                 preview = loaded.json()["dataset"]
+                counts = preview["metadata"]["record_counts"]
+                for key, expected in (("sales", args.expect_sales), ("products", args.expect_products)):
+                    if expected is not None and counts[key] != expected:
+                        raise AssertionError(f"Expected {expected} {key}, imported {counts[key]}")
                 print("Input loaded; calculating...", flush=True)
                 calculated = client.post("/api/calculate", json={"settings": {"locale": args.locale}})
                 calculated.raise_for_status()
@@ -86,12 +92,15 @@ def main():
                     exported = client.get(f"/api/runs/{run['run_id']}/export", params={"format": fmt})
                     exported.raise_for_status()
                     assert exported.content
+                evidence = client.get(f"/api/runs/{run['run_id']}/evidence")
+                evidence.raise_for_status()
+                assert evidence.json().get("fingerprint_sha256")
                 print(json.dumps({
                     "status": "passed", "synthetic": not bool(args.files), "locale": args.locale,
                     "input_counts": preview["metadata"]["record_counts"],
                     "result_items": len(run["rows"]), "order_lines": run["summary"]["order_lines"],
                     "seconds": round(time.perf_counter() - started, 3),
-                    "scope": "live localhost HTTP, import, calculation, detail, approval, CSV/XLSX; no supplier dispatch",
+                    "scope": "live localhost HTTP, import, calculation, detail, approval, CSV/XLSX and evidence; no supplier dispatch",
                 }, ensure_ascii=False, indent=2))
         finally:
             process.terminate()

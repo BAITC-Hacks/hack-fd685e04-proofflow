@@ -75,11 +75,13 @@ subcases). The tests verify:
    (e.g. `-p 127.0.0.1:8000:8000`) and never expose it publicly without an
    authentication and access-control layer. Docker build/run was not verified
    on this host.
-2. **Origin is defense in depth, not authentication.** Foreign explicit
-   `Origin` is blocked, but requests with no `Origin` are accepted. A remote
-   process that can reach the service can read or write; DNS rebinding and
-   proxy/network exposure need host-header validation or a stronger trust
-   boundary. Do not claim a production-ready CSRF defense.
+2. **Origin and Host checks are defense in depth, not authentication.** Foreign
+   explicit `Origin` is blocked for writes, and the HTTP middleware accepts only
+   localhost/TestClient Host names. Requests without `Origin` are accepted, so
+   a process that can reach a deliberately exposed service is still a risk.
+   These checks do not make a network-facing deployment safe; use a stronger
+   trust boundary before exposing the service. Do not claim a production-ready
+   CSRF defense.
 3. **Computational limits are bounded, not a public-service guarantee.** HTTP
    upload totals are capped at 80 MiB. The engine enforces a 730-day planning
    horizon, up to 50,000 products, 2 million sales, 100,000 stockout records,

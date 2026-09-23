@@ -1,0 +1,7 @@
+{
+  "name": "proofflow-workbench",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "node --test tests/*.test.js" },
+  "description": "Dependency-free browser ES modules; served by FastAPI."
+}

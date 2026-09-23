@@ -107,3 +107,33 @@ def test_generic_iek_sales_filename_survives_browser_upload(tmp_path):
     dataset = import_files([str(xlsx)])
     assert len(dataset["sales"]) == 1
     assert dataset["products"][0]["supplier"] == "IEK"
+
+
+def test_short_systeme_report_row_does_not_abort_import(tmp_path):
+    sale = tmp_path / "Динамика продаж_Systeme.xlsx"
+    report = tmp_path / "Товар в пути_Systeme.xlsx"
+    _book(sale, [
+        ["Дата", "Номер", "Документ", "Код", "Номенклатура", "Ед.", "Склад", "Количество"],
+        [date(2026, 9, 22), "doc", "Накладная", "S-1", "Розетка", "шт", "Алматы", 5],
+    ])
+    _book(report, [["Отчёт"], ["Код 1с", "Наименование", "Категория 2026", "Свободный остаток"],
+                   ["S-1"]])
+    dataset = import_files([str(sale), str(report)])
+    product = next(row for row in dataset["products"] if row["sku"] == "S-1")
+    assert product["provenance"]["on_hand"] == "missing"
+    assert product["category"] == "unknown"
+
+
+def test_mixed_supplier_zip_respects_member_identity(tmp_path):
+    iek = tmp_path / "Динамика продаж_IEK.xlsx"
+    systeme = tmp_path / "Динамика продаж_Systeme.xlsx"
+    header = ["Дата", "Номер", "Документ", "Код", "Номенклатура", "Ед.", "Склад", "Количество"]
+    _book(iek, [header, [date(2026, 9, 22), "doc1", "Накладная", "I-1", "A", "шт", "Алматы", 2]])
+    _book(systeme, [header, [date(2026, 9, 22), "doc2", "Накладная", "S-1", "B", "шт", "Алматы", 3]])
+    archive_path = tmp_path / "IEK.zip"
+    with ZipFile(archive_path, "w") as archive:
+        archive.write(iek, "IEK/Динамика продаж_IEK.xlsx")
+        archive.write(systeme, "Systeme electric/Динамика продаж_Systeme.xlsx")
+    dataset = import_files([str(archive_path)])
+    assert {row["sku"]: row["supplier"] for row in dataset["products"]} == {
+        "I-1": "IEK", "S-1": "Systeme Electric"}

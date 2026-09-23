@@ -34,3 +34,12 @@ is written during the competition in this repository.
   price-provenance safeguards, README/architecture. Local preflight: 72 passed,
   one optional stress test skipped. Frontend was still untracked at this point;
   this commit alone was not the final runnable submission.
+- `739ef55`: committed at 16:57:22 UTC+5 and verified against remote `main` at
+  17:18:54 UTC+5. It contains the frontend purchasing workbench, three UI
+  languages, light/dark themes and the calculation evidence report.
+- At 17:18 UTC+5, the then-current working tree passed `scripts/preflight.py`
+  (118 passed, 1 skipped, 9 subtests; both JavaScript syntax checks passed)
+  and `scripts/verify_live_flow.py` (localhost import → calculation → detail →
+  approval → CSV/XLSX → evidence on synthetic data). These working-tree results
+  do not prove that later changes are committed, pushed or submitted through
+  the platform; repeat the gates on the release tree.

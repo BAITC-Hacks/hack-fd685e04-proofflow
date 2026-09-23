@@ -87,7 +87,7 @@ def import_partner_files(paths: list[str]) -> dict:
                         if aggregate_bytes > 160 * 1024 * 1024 or member.file_size > max(member.compress_size, 1) * 100:
                             raise ValueError("Partner ZIP expanded size exceeds safety limit")
                         # Use the basename only: archive member paths must not escape temp.
-                        supplier_hint = _supplier(source) or _supplier(Path(member.filename)) or "unknown"
+                        supplier_hint = _supplier(Path(member.filename)) or _supplier(source) or "unknown"
                         target = Path(temp) / f"{len(files)}_{supplier_hint}_{Path(member.filename).name}"
                         target.write_bytes(archive.read(member))
                         files.append(target)
@@ -318,11 +318,12 @@ def _read_systeme_report(sheet, products, inbound, warnings, counts):
     for values in rows:
         if len(values) <= sku_col:
             continue
+        name_col = col("Наименование")
         product = _update_product(products, values[sku_col], "Systeme Electric",
-                                  name=values[col("Наименование")] if col("Наименование") is not None else None)
+                                  name=values[name_col] if name_col is not None and len(values) > name_col else None)
         if product is None:
             continue
-        if category_col is not None and values[category_col] not in (None, ""):
+        if category_col is not None and len(values) > category_col and values[category_col] not in (None, ""):
             product["category"] = str(values[category_col]).strip()
             product["provenance"]["category"] = "partner_2026_category"
             counts["category"] += 1

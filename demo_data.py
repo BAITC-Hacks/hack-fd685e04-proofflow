@@ -19,14 +19,15 @@ def build_demo() -> dict:
         {"sku": "DEMO-REPEAT-10", "name": "Synthetic recurring client peak", "supplier": "DEMO-SUPPLIER-A", "category": "cable", "warehouse": "B", "unit": "m", "on_hand": 50, "lead_days": 6, "pack_size": 5, "unit_price": 80},
     ]
     sales = []
-    start = AS_OF - timedelta(days=364)
     for p_idx, p in enumerate(products):
         if p["sku"] == "DEMO-COLDSTART-09":
             continue
-        for offset in range(365):
+        history_days = 730 if p["sku"] == "DEMO-SEASON-01" else 365
+        start = AS_OF - timedelta(days=history_days - 1)
+        for offset in range(history_days):
             d = start + timedelta(days=offset)
             if p["sku"] == "DEMO-SEASON-01":
-                qty = 3 if d.month in (11, 12, 1, 2) else 1
+                qty = 3 if d.month in (9, 10) else 1
             elif p["sku"] == "DEMO-GROW-02":
                 qty = 2 + offset // 90
             elif p["sku"] == "DEMO-STOCKOUT-03":

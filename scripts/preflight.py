@@ -13,7 +13,9 @@ def main():
         "docs/ARCHITECTURE.md", "docs/COMPLIANCE.md",
         "docs/METHODOLOGY.md", "docs/DATA_MAPPING.md",
         "frontend/index.html", "frontend/app.js", "frontend/styles.css",
-        "frontend/i18n.js", "localization.py",
+        "frontend/i18n.js", "frontend/lib/api.js", "frontend/lib/format.js",
+        "frontend/lib/state.js", "frontend/lib/views.js",
+        "frontend/lib/workflow.js", "localization.py", "evidence.py",
         "engine.py", "importer.py", "partner_xlsx.py", "demo_data.py",
         "server.py", "storage.py", "exports.py",
     ]
@@ -23,8 +25,12 @@ def main():
         return 1
     checks = [("Python tests", [sys.executable, "-m", "pytest", "tests", "-q"])]
     if shutil.which("node"):
-        checks.append(("Browser JavaScript syntax", ["node", "--check", "frontend/app.js"]))
-        checks.append(("Language catalogue syntax", ["node", "--check", "frontend/i18n.js"]))
+        javascript_files = sorted((ROOT / "frontend").glob("*.js"))
+        javascript_files += sorted((ROOT / "frontend" / "lib").glob("*.js"))
+        checks.extend(
+            (f"JavaScript syntax: {path.relative_to(ROOT)}", ["node", "--check", str(path)])
+            for path in javascript_files
+        )
     else:
         print("Node is unavailable: JavaScript syntax check not run.")
     for label, command in checks:

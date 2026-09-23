@@ -56,6 +56,14 @@ def _number(value: Any, name: str, *, minimum: float | None = None) -> float:
     return result
 
 
+def _whole_days(value: Any, name: str) -> int:
+    """Planning horizons are calendar days; reject silent fractional truncation."""
+    days = _number(value, name, minimum=0)
+    if not days.is_integer():
+        raise ValueError(f"{name} must be an integer number of days")
+    return int(days)
+
+
 def _day(value: Any, name: str) -> date:
     if not isinstance(value, str):
         raise ValueError(f"{name} must be an ISO date string")
@@ -83,35 +91,41 @@ def _local_expected(values: list[float], index: int, fallback: float) -> float:
 def _seasonal_indices(history: list[dict[str, Any]], min_observations: int) -> dict[str, Any]:
     """Estimate weekday and month indices from adjusted observed history.
 
-    Month-of-year factors are enabled with >= min_observations across that
-    month and renormalized to a sample-weighted mean of one.
+    Month-of-year factors need observations in at least two distinct years.
+    A few growing months are trend evidence, not an annual seasonal cycle.
     """
     positive = [r["demand"] for r in history if not r["stockout"] and not r["excluded"]]
     overall = _mean(positive)
     if overall <= 0:
         return {"weekday": {i: 1.0 for i in range(7)},
-                "month": {i: 1.0 for i in range(1, 13)}}
+                "month": {i: 1.0 for i in range(1, 13)}, "month_evidence": []}
     weekday_samples: dict[int, list[float]] = defaultdict(list)
     month_samples: dict[int, list[float]] = defaultdict(list)
+    month_years: dict[int, dict[int, int]] = defaultdict(lambda: defaultdict(int))
     for row in history:
         if row["stockout"] or row["excluded"]:
             continue
         d = date.fromisoformat(row["date"])
         weekday_samples[d.weekday()].append(row["demand"])
         month_samples[d.month].append(row["demand"])
+        month_years[d.month][d.year] += 1
     weekday = {i: (_mean(v) / overall if len(v) >= 3 else 1.0)
                for i, v in weekday_samples.items()}
     weekday.update({i: 1.0 for i in range(7) if i not in weekday})
     # Normalize weekday indices so averaging them does not shift the level.
     weekday_norm = sum(weekday.values()) / 7 or 1.0
     weekday = {k: v / weekday_norm for k, v in weekday.items()}
-    month = {i: (_mean(v) / overall if len(v) >= min_observations else 1.0)
+    evidenced_months = {month for month, years in month_years.items()
+                       if sum(count >= max(1, min_observations)
+                              for count in years.values()) >= 2}
+    month = {i: (_mean(v) / overall if i in evidenced_months else 1.0)
              for i, v in month_samples.items()}
     month.update({i: 1.0 for i in range(1, 13) if i not in month})
     weighted = sum(month[m] * len(v) for m, v in month_samples.items()) / max(
         1, sum(len(v) for v in month_samples.values()))
     month = {k: v / (weighted or 1.0) for k, v in month.items()}
-    return {"weekday": weekday, "month": month}
+    return {"weekday": weekday, "month": month,
+            "month_evidence": sorted(evidenced_months)}
 
 
 def _trend_factor(history: list[dict[str, Any]], horizon: int, window: int) -> tuple[float, float]:
@@ -132,7 +146,10 @@ def _trend_factor(history: list[dict[str, Any]], horizon: int, window: int) -> t
     level = max(0.0, ybar)
     # Report the average projected uplift across the forecast horizon. Bound
     # extreme extrapolation so a few observations cannot create an absurd order.
-    raw_factor = (ybar + slope * (max(0, len(xs) - 1 - xbar) + max(0, horizon - 1) / 2)) / ybar if ybar > 0 else 1.0
+    # A stockout near as_of removes observations but not elapsed calendar
+    # days. Extrapolate from the fitted midpoint to the actual end of the
+    # window, rather than to the index of the last usable observation.
+    raw_factor = (ybar + slope * (max(0, len(recent) - 1 - xbar) + max(0, horizon - 1) / 2)) / ybar if ybar > 0 else 1.0
     factor = min(2.0, max(0.5, raw_factor))
     return factor, level
 
@@ -183,7 +200,7 @@ def _calc_product(product: dict[str, Any], dataset: dict[str, Any], as_of: date,
     warehouse = product["warehouse"]
     k = _key(sku, warehouse)
     on_hand = _number(product.get("on_hand", 0), f"products[{sku}].on_hand", minimum=0)
-    lead_days = int(_number(product.get("lead_days", 0), f"products[{sku}].lead_days", minimum=0))
+    lead_days = _whole_days(product.get("lead_days", 0), f"products[{sku}].lead_days")
     sku_growth = _number(product.get("growth", 0), f"products[{sku}].growth", minimum=-1)
     pack_size = _number(product.get("pack_size", 1), f"products[{sku}].pack_size", minimum=1e-9)
     moq = _number(product.get("moq", 0), f"products[{sku}].moq", minimum=0)
@@ -191,8 +208,8 @@ def _calc_product(product: dict[str, Any], dataset: dict[str, Any], as_of: date,
     review_days = int(settings["review_days"])
     cat_policy = dataset.get("category_policies", {}).get(product.get("category", ""), {})
     category_growth = _number(cat_policy.get("growth", 0), f"category_policies[{product.get('category')}].growth", minimum=-1)
-    safety_days = int(_number(cat_policy.get("safety_days", settings["safety_days"]),
-                              f"category_policies[{product.get('category')}].safety_days", minimum=0))
+    safety_days = _whole_days(cat_policy.get("safety_days", settings["safety_days"]),
+                              f"category_policies[{product.get('category')}].safety_days")
     horizon = max(1, lead_days + review_days + safety_days)
     if horizon > MAX_HORIZON_DAYS:
         raise ValueError(
@@ -241,7 +258,13 @@ def _calc_product(product: dict[str, Any], dataset: dict[str, Any], as_of: date,
     eligible = [v for i, v in enumerate(raw_values) if not is_stockout[i]]
     base = median(eligible) if eligible else 0.0
     mad = median([abs(v - base) for v in eligible]) if eligible else 0.0
-    threshold = max(base * settings["outlier_multiplier"], base + 6 * mad, base + 1.0)
+    active_values = sorted(v for v in eligible if v > 0)
+    active_median = median(active_values) if active_values else 0.0
+    # A quantity expressed in tonnes must get the same classification as the
+    # same quantity expressed in kilograms. This tolerance follows input scale.
+    quantity_epsilon = max(base, active_median) * 1e-9
+    threshold = max(base * settings["outlier_multiplier"], base + 6 * mad,
+                    base + quantity_epsilon)
     excluded_by_index: dict[int, float] = {}
     events: list[dict[str, Any]] = []
     document_spike_count = 0
@@ -251,8 +274,6 @@ def _calc_product(product: dict[str, Any], dataset: dict[str, Any], as_of: date,
     # weaker signal, require enough non-zero reference days and a genuinely
     # extreme quantity relative to the positive-day distribution. A median of
     # zero on intermittent SKUs must not classify ordinary orders as spikes.
-    active_values = sorted(v for v in eligible if v > 0)
-    active_median = median(active_values) if active_values else 0.0
     active_p90 = active_values[int(0.9 * (len(active_values) - 1))] if active_values else 0.0
     document_threshold = max(threshold * 2, active_median * 8, active_p90 * 3)
     client_history: dict[str, list[tuple[date, float]]] = defaultdict(list)
@@ -284,7 +305,7 @@ def _calc_product(product: dict[str, Any], dataset: dict[str, Any], as_of: date,
                                if d != history_dates[i]]
         client_median = median(prior_client_values) if prior_client_values else 0.0
         client_spike = not prior_client_values or largest > max(
-            client_median * settings["outlier_multiplier"], client_median + 1.0)
+            client_median * settings["outlier_multiplier"], client_median + quantity_epsilon)
         recurring_month_peak = any(
             d != history_dates[i] and d.month == history_dates[i].month
             and quantity >= threshold
@@ -357,9 +378,28 @@ def _calc_product(product: dict[str, Any], dataset: dict[str, Any], as_of: date,
         deseasonalized.append({
             "demand": item["adjusted_demand"] / max(observed_factor, 0.05),
             "stockout": item["stockout"], "excluded": item["excluded"],
+            "seasonal_factor": observed_factor,
         })
     trend_factor, level = _trend_factor(
         deseasonalized, horizon, int(settings["trend_window_days"]))
+    recent_reference = [r for r in deseasonalized[-max(int(settings["trend_window_days"]), 8):]
+                        if not r["stockout"] and not r["excluded"]]
+    future_months = {(as_of + timedelta(days=offset + 1)).month for offset in range(horizon)}
+    if level == 0 and recent_reference and all(
+            r["seasonal_factor"] == 0 for r in recent_reference) and future_months.issubset(
+                seasonality["month_evidence"]):
+        # An established zero-demand off-season does not erase a recurring
+        # selling season. Reuse its observed deseasonalized level, without
+        # extrapolating a trend across calendar gaps. Ordinary declining or
+        # discontinued demand keeps its zero level because its historical
+        # seasonal factors are not all zero. Cold starts have no evidence.
+        seasonal_reference = [r["demand"] for day, r in zip(history, deseasonalized)
+                              if not r["stockout"] and not r["excluded"]
+                              and r["seasonal_factor"] > 0
+                              and date.fromisoformat(day["date"]).month in seasonality["month_evidence"]]
+        if seasonal_reference:
+            level = _mean(seasonal_reference[-max(int(settings["trend_window_days"]), 8):])
+            trend_factor = 1.0
     growth_factor = max(0.0, (1 + sku_growth) * (1 + category_growth))
     forecast: list[dict[str, Any]] = []
     future_start = as_of + timedelta(days=1)

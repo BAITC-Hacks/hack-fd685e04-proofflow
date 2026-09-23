@@ -47,6 +47,8 @@ def _float(value, field: str) -> float:
 
 def _csv_dataset(paths: list[Path]) -> dict:
     products: dict[tuple[str, str], dict] = {}
+    product_priorities: dict[tuple[str, str], dict] = {}
+    metadata_conflicts: set[tuple[str, str, str]] = set()
     sales: list[dict] = []
     inbound: list[dict] = []
     stockouts: list[dict] = []
@@ -61,26 +63,43 @@ def _csv_dataset(paths: list[Path]) -> dict:
             key = warehouse, sku
             product = products.setdefault(key, {
                 "sku": sku, "warehouse": warehouse,
-                "name": row.get("name") or row.get("наименование") or sku,
-                "supplier": row.get("supplier") or row.get("поставщик") or "UNASSIGNED",
-                "category": row.get("category") or row.get("категория") or "unknown",
-                "unit": row.get("unit") or row.get("единица") or "pcs",
+                "name": sku, "supplier": "UNASSIGNED", "category": "unknown", "unit": "pcs",
                 "on_hand": 0, "lead_days": 0, "moq": 0, "pack_size": 1, "unit_price": 0,
                 "provenance": {"on_hand": "missing", "lead_days": "missing", "unit_price": "missing"},
             })
-            if row.get("on_hand") not in (None, ""):
-                product["on_hand"] = _float(row["on_hand"], "on_hand")
-                product["provenance"]["on_hand"] = "observed"
-            if row.get("lead_days") not in (None, ""):
-                product["lead_days"] = _float(row["lead_days"], "lead_days")
-                product["provenance"]["lead_days"] = "observed"
-            if row.get("unit_price") not in (None, ""):
-                product["unit_price"] = _float(row["unit_price"], "unit_price")
-                product["provenance"]["unit_price"] = "observed"
-            if row.get("pack_size") not in (None, ""):
-                product["pack_size"] = _float(row["pack_size"], "pack_size")
-            if row.get("moq") not in (None, ""):
-                product["moq"] = _float(row["moq"], "moq")
+            priorities = product_priorities.setdefault(key, {})
+            # Explicit catalog rows take precedence over metadata repeated in
+            # transactions. Among dated snapshots the latest wins. Equal-priority
+            # conflicting values are ambiguous, so reject rather than depend on
+            # the user's file selection order. Blank cells never erase a value.
+            day_value = str(row.get("date") or row.get("Дата") or "").strip()
+            transaction = bool(day_value or row.get("eta") or row.get("start") or row.get("end"))
+            priority = (0 if transaction else 1, day_value)
+            updates = {}
+            for field, aliases in {
+                "name": ("name", "наименование", "Наименование"),
+                "supplier": ("supplier", "поставщик", "Поставщик"),
+                "category": ("category", "категория", "Категория"),
+                "unit": ("unit", "единица", "Ед."),
+            }.items():
+                for alias in aliases:
+                    value = row.get(alias)
+                    if value is not None and str(value).strip():
+                        updates[field] = str(value).strip()
+                        break
+            for field in ("on_hand", "lead_days", "unit_price", "pack_size", "moq", "growth"):
+                if row.get(field) is not None and str(row[field]).strip():
+                    updates[field] = _float(row[field], field)
+            for field, value in updates.items():
+                previous = priorities.get(field)
+                if previous is not None and priority == previous and product[field] != value:
+                    metadata_conflicts.add((warehouse, sku, field))
+                if previous is not None and priority > previous:
+                    metadata_conflicts.discard((warehouse, sku, field))
+                if previous is None or priority >= previous:
+                    product[field] = value
+                    product["provenance"][field] = "observed"
+                    priorities[field] = priority
             quantity = row.get("quantity") or row.get("Количество") or row.get("количество")
             if row.get("date") or row.get("Дата"):
                 day = str(row.get("date") or row.get("Дата")).strip()
@@ -102,6 +121,9 @@ def _csv_dataset(paths: list[Path]) -> dict:
             elif row.get("start") and row.get("end"):
                 stockouts.append({"sku": sku, "warehouse": warehouse,
                                   "start": str(row["start"]).strip(), "end": str(row["end"]).strip()})
+    if metadata_conflicts:
+        field = sorted(metadata_conflicts)[0][2]
+        raise ValueError(f"Conflicting CSV product {field}; supply one authoritative catalog value per warehouse/SKU")
     if not products or not sales:
         raise ValueError("CSV input requires dated sales and a SKU column")
     warnings.extend([

@@ -231,6 +231,10 @@ def calculate(body: CalculationRequest):
                 product.get("unit_price") not in (None, "")
                 if synthetic else row["input_provenance"]["unit_price"] in {"observed", "assumed"}
             )
+            # The engine can multiply a numeric placeholder price, but the
+            # API must not present that as a priced purchasing decision.
+            if not row["price_known"]:
+                row["amount"] = None
         filters = body.filters or {}
         allowed_filters = {"warehouse", "category", "supplier"}
         if set(filters) - allowed_filters:
@@ -248,7 +252,7 @@ def calculate(body: CalculationRequest):
             supplier = row["supplier"]
             group = groups.setdefault(supplier, {"supplier": supplier, "order_lines": 0, "total_amount": 0.0})
             group["order_lines"] += row["recommended_quantity"] > 0
-            group["total_amount"] += row.get("amount", 0)
+            group["total_amount"] += row.get("amount") or 0
         result["supplier_groups"] = [
             {**groups[supplier], "total_amount": round(groups[supplier]["total_amount"], 2)}
             for supplier in sorted(groups)
@@ -256,7 +260,7 @@ def calculate(body: CalculationRequest):
         result["summary"] = {
             "items": len(rows), "suppliers": len({r["supplier"] for r in rows}),
             "order_lines": sum(r["recommended_quantity"] > 0 for r in rows),
-            "total_amount": round(sum(r.get("amount", r["recommended_quantity"] * r.get("unit_price", 0)) for r in rows), 2),
+            "total_amount": round(sum(r.get("amount") or 0 for r in rows), 2),
             "critical_items": sum(r.get("urgency") == "critical" for r in rows),
             "unpriced_order_lines": sum(r["recommended_quantity"] > 0 and not r["price_known"] for r in rows),
         }
