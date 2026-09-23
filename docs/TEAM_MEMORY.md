@@ -40,6 +40,10 @@ not a substitute for the current official task, rules or judging rubric.
 - Final delivery requires a verified README, tests, realistic end-to-end demo,
   security/privacy checks, official-repo push and submission through the event
   platform before the organizer's freeze. A Git push alone is not submission.
+- At 15:19 UTC+5 the user requested a fully working project by 17:00, leaving
+  approximately one hour for adversarial checks and platform submission before
+  the provisional 18:00 freeze. Reassign freed agent capacity to concrete
+  independent tasks; root alone integrates and pushes.
 - Aim to satisfy every current criterion. **Do not promise 100/100**: the actual
   score belongs to the judges, and this file cannot override the official rubric.
 

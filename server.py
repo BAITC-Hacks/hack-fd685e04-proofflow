@@ -1,6 +1,9 @@
 """ProofFlow localhost purchasing service. Run: python server.py."""
 import json
+import hashlib
+import hmac
 import math
+import secrets
 import sqlite3
 import tempfile
 from datetime import datetime, timezone
@@ -19,6 +22,35 @@ ROOT = Path(__file__).parent
 MAX_UPLOAD_BYTES = 80 * 1024 * 1024
 app = FastAPI(title="ProofFlow Procurement", version="0.2.0",
               description="Local recommendations requiring explicit human approval.")
+
+
+def anonymize_sales_identifiers(dataset):
+    """Discard raw customer/document IDs before any storage or calculation.
+
+    The per-operation HMAC key is intentionally never persisted. Matching IDs
+    remain equal within this dataset/run, while original names or emails cannot
+    appear in detailed diagnostics or saved artifacts.
+    """
+    sales = dataset.get("sales", [])
+    if not isinstance(sales, list):
+        return
+    key = secrets.token_bytes(32)
+    seen = {}
+    for row in sales:
+        if not isinstance(row, dict):
+            continue  # The engine reports malformed rows with their index.
+        for field, prefix in (("client_id", "CID"), ("event_id", "EID")):
+            value = row.get(field)
+            if value is None or value == "":
+                continue
+            if isinstance(value, bool) or not isinstance(value, (str, int)):
+                raise ValueError(f"sales.{field} must be an anonymous scalar identifier")
+            raw = str(value)
+            cache_key = field, raw
+            if cache_key not in seen:
+                digest = hmac.new(key, raw.encode("utf-8"), hashlib.sha256).hexdigest()[:24]
+                seen[cache_key] = f"{prefix}-{digest}"
+            row[field] = seen[cache_key]
 
 
 class CalculationRequest(BaseModel):
@@ -75,6 +107,7 @@ def current_dataset():
 def demo():
     from demo_data import build_demo
     data = build_demo()
+    anonymize_sales_identifiers(data)
     data["_data_ref"] = uuid4().hex
     storage.save_dataset(data)
     return source_response(data)
@@ -108,6 +141,7 @@ async def import_data(request: Request):
                 data = await run_in_threadpool(import_files, paths)
                 if not isinstance(data, dict) or not data.get("products"):
                     raise ValueError("Не найден справочник товаров")
+                anonymize_sales_identifiers(data)
                 data["_data_ref"] = uuid4().hex
                 storage.save_dataset(data)
                 return source_response(data)
@@ -140,11 +174,18 @@ def calculate(body: CalculationRequest):
     if body.category_policies is not None:
         data["category_policies"] = {**data.get("category_policies", {}), **body.category_policies}
     try:
+        anonymize_sales_identifiers(data)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    try:
         result = run_engine(data)
         filters = body.filters or {}
         allowed_filters = {"warehouse", "category", "supplier"}
         if set(filters) - allowed_filters:
             raise ValueError("Неизвестный фильтр")
+        for row in result["rows"]:
+            if not row.get("supplier"):
+                row["supplier"] = "UNASSIGNED"
         rows = [row for row in result["rows"] if all(not value or str(row.get(key, "")) == value for key, value in filters.items())]
         keys = [exports.row_key(row) for row in rows]
         if len(keys) != len(set(keys)):
