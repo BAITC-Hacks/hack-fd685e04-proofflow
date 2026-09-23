@@ -50,6 +50,10 @@ def main():
             "items": len(result.get("rows", [])),
             "order_lines": sum(row.get("recommended_quantity", 0) > 0 for row in result.get("rows", [])),
             "warnings": len(result.get("warnings", [])),
+            "excluded_events": sum(len(row.get("excluded_events", [])) for row in result.get("rows", [])),
+            "document_review_items": sum(
+                any("номером документа" in warning for warning in row.get("warnings", []))
+                for row in result.get("rows", [])),
         },
         "seconds": {
             "load_or_import": round(imported - start, 3),

@@ -1,17 +1,20 @@
-# ProofFlow procurement — competition development
+# ProofFlow — development rules
 
-Official repository for team ProofFlow and the Электрокомплект replenishment task.
-Read `docs/TEAM_MEMORY.md` for the user's persistent priorities and decisions;
-official rules and the current task always take precedence.
-Implement task-specific code here; do not copy the TransClaim application.
-Root integrates and commits/pushes. Agents own disjoint files assigned by root.
-Never commit raw partner archives, real client names, secrets, or runtime data.
-Synthetic fixtures must be labelled. Orders are recommendations requiring an
-explicit human approval; the application must never automatically send orders.
-All quantities must be calculated deterministically. Explanations must reflect
-actual calculation inputs. Test each requirement and document real limitations.
-The first working increment is 2546b84 (7 passing unittest cases).
+This is the official competition repository for team ProofFlow's supplier
+replenishment solution. The task statement and organizer rules take priority
+over this file. See `README.md` for the product and `docs/CONTRACT.md` for the
+data/API contract.
 
-Use `docs/CONTRACT.md` for integration. Root owns server.py, application storage,
-requirements, README and release integration. Communicate before editing files
-assigned to another agent. Do not run git add/commit/push from a subagent.
+- Build and verify the core procurement functionality in this repository.
+  Disclose third-party and pre-existing components; do not present an earlier
+  product as hackathon work.
+- Never commit partner source files, personal data, credentials, runtime
+  databases, or private exports. Keep synthetic fixtures clearly labelled.
+- Orders remain recommendations until a responsible person reviews and
+  approves them. Never send or place supplier orders automatically.
+- Keep quantities deterministic and explanations traceable to actual inputs.
+  Unknown stock, lead time, customer ID, price, and stockout dates are unknown,
+  not observed zeros.
+- Run the relevant tests and `scripts/preflight.py` before release. Root
+  coordinates integration and performs commit/push; contributors work in
+  disjoint areas and report changes before integration.

@@ -8,6 +8,7 @@ import sqlite3
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request, UploadFile
@@ -65,15 +66,44 @@ class ApprovalRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     quantities: dict[str, StrictFloat] = Field(default_factory=dict)
     reviewer: str = Field(min_length=1, max_length=120)
+    acknowledge_missing_inputs: bool = False
+
+
+def _input_status(product: dict, field: str) -> str:
+    provenance = product.get("provenance")
+    if isinstance(provenance, dict) and provenance.get(field) in {"observed", "assumed", "missing"}:
+        return provenance[field]
+    return "missing" if product.get(field) in (None, "") else "unknown"
+
+
+def _local_host_allowed(request: Request) -> bool:
+    """Reject DNS-rebinding hosts even on read-only API endpoints."""
+    host = request.headers.get("host", "")
+    if not host or any(char in host for char in ("/", "\\", "@", "?", "#")):
+        return False
+    try:
+        parsed = urlsplit(f"http://{host}")
+        hostname = parsed.hostname
+        parsed.port  # Reject malformed ports.
+    except ValueError:
+        return False
+    if hostname in {"127.0.0.1", "localhost", "::1"}:
+        return True
+    return hostname == "testserver" and request.client is not None and request.client.host == "testclient"
 
 
 @app.middleware("http")
 async def local_write_guard(request: Request, call_next):
+    # Localhost only: Origin checking alone does not prevent DNS rebinding.
+    if not _local_host_allowed(request):
+        return JSONResponse({"detail": "Only localhost access is permitted"}, status_code=403)
     # Avoid cross-origin drive-by mutations to the single-user local service.
     origin = request.headers.get("origin")
     if request.method not in {"GET", "HEAD", "OPTIONS"} and origin:
-        from urllib.parse import urlparse
-        origin_host = urlparse(origin).netloc
+        try:
+            origin_host = urlsplit(origin).netloc
+        except ValueError:
+            return JSONResponse({"detail": "Invalid Origin"}, status_code=403)
         if origin_host != request.headers.get("host"):
             return JSONResponse({"detail": "Cross-origin writes are not permitted"}, status_code=403)
     response = await call_next(request)
@@ -181,6 +211,21 @@ def calculate(body: CalculationRequest):
         raise HTTPException(422, str(exc)) from exc
     try:
         result = run_engine(data)
+        products_by_key = {
+            (str(product.get("warehouse") or "default"), str(product["sku"])): product
+            for product in data["products"]
+        }
+        synthetic = data.get("metadata", {}).get("synthetic") is True
+        for row in result["rows"]:
+            product = products_by_key[(row["warehouse"], row["sku"])]
+            row["input_provenance"] = {
+                field: _input_status(product, field)
+                for field in ("on_hand", "lead_days", "unit_price")
+            }
+            row["price_known"] = (
+                product.get("unit_price") not in (None, "")
+                if synthetic else row["input_provenance"]["unit_price"] in {"observed", "assumed"}
+            )
         filters = body.filters or {}
         allowed_filters = {"warehouse", "category", "supplier"}
         if set(filters) - allowed_filters:
@@ -208,10 +253,13 @@ def calculate(body: CalculationRequest):
             "order_lines": sum(r["recommended_quantity"] > 0 for r in rows),
             "total_amount": round(sum(r.get("amount", r["recommended_quantity"] * r.get("unit_price", 0)) for r in rows), 2),
             "critical_items": sum(r.get("urgency") == "critical" for r in rows),
+            "unpriced_order_lines": sum(r["recommended_quantity"] > 0 and not r["price_known"] for r in rows),
         }
+        result["summary"]["total_amount_complete"] = result["summary"]["unpriced_order_lines"] == 0
         result.update(run_id=uuid4().hex, created_at=datetime.now(timezone.utc).isoformat(),
-                      source_label=data.get("metadata", {}).get("source_label", "Загруженные данные"),
-                      settings=data.get("settings", {}), filters=filters, approval=None)
+                       source_label=data.get("metadata", {}).get("source_label", "Загруженные данные"),
+                       settings=data.get("settings", {}), filters=filters, approval=None,
+                       source_synthetic=synthetic)
         storage.save_run(result)
         return storage.load_run(result["run_id"])
     except (ValueError, TypeError, KeyError, OverflowError) as exc:
@@ -253,10 +301,24 @@ def approve(run_id: str, body: ApprovalRequest):
     quantities = {key: body.quantities.get(key, row["recommended_quantity"]) for key, row in expected.items()}
     if any(not math.isfinite(value) or value < 0 or value > 1e12 for value in quantities.values()):
         raise HTTPException(422, "Количество должно быть конечным числом от 0 до 10^12")
+    missing_input_rows = [
+        key for key, row in expected.items()
+        if quantities[key] > 0 and any(
+            row.get("input_provenance", {}).get(field) not in {"observed", "assumed"}
+            for field in ("on_hand", "lead_days")
+        )
+    ] if run.get("source_synthetic") is False else []
+    if missing_input_rows and not body.acknowledge_missing_inputs:
+        raise HTTPException(
+            422,
+            f"У {len(missing_input_rows)} позиций не подтверждены остаток или срок поставки. "
+            "Сверьте данные либо явно подтвердите ограничения перед утверждением.",
+        )
     approval = {"approval_id": uuid4().hex, "status": "approved",
                 "approved_at": datetime.now(timezone.utc).isoformat(),
                 "reviewer": body.reviewer.strip(), "quantities": quantities,
-                "supplier_sent": False}
+                "supplier_sent": False,
+                "acknowledged_missing_inputs": bool(missing_input_rows and body.acknowledge_missing_inputs)}
     try:
         storage.save_approval(run_id, approval)
     except sqlite3.IntegrityError as exc:

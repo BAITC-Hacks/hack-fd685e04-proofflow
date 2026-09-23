@@ -3,8 +3,10 @@
 This file records the team's decisions and the user's recurring requests; it is
 not a substitute for the current official task, rules or judging rubric.
 
-- Team: **ProofFlow**. One human participant works with Codex and its coding
-  subagents; subagents are tools, not registered team members.
+- Team: **ProofFlow**, three registered human participants, all checked in and
+  physically at the venue per the captain's confirmation at 16:00 UTC+5.
+  One teammate owns frontend work/commits; Codex and its subagents are tools,
+  not registered team members.
 - Official competition repository: `BAITC-Hacks/hack-fd685e04-proofflow`.
   Develop and push the competition solution here. The older TransClaim project
   is prior work, not the submission or a source of ready-made core functionality.

@@ -29,7 +29,13 @@ def export_rows(run, supplier=None):
         row.update(quantity=quantity, status="Утверждён" if approval else "Черновик — требует проверки",
                    reviewer=approval["reviewer"] if approval else "",
                    approved_at=approval["approved_at"] if approval else "")
-        row["amount"] = float((Decimal(str(quantity)) * Decimal(str(row.get("unit_price", 0)))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+        price_known = row.get("price_known", row.get("unit_price") not in (None, 0, ""))
+        if price_known:
+            row["amount"] = float((Decimal(str(quantity)) * Decimal(str(row["unit_price"]))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+        else:
+            # Unknown is not a confirmed zero price. Leave the business cells empty.
+            row["unit_price"] = ""
+            row["amount"] = ""
         rows.append(row)
     return rows
 
@@ -80,6 +86,8 @@ def to_xlsx(run, supplier=None):
     info.append(["Источник", run.get("source_label", "")])
     info.append(["Статус", "Утверждён" if run.get("approval") else "Черновик — требует проверки"])
     info.append(["Назначение", "Файл для проверки и ручной загрузки. Автоматическая отправка поставщику не выполняется."])
+    if any(row.get("price_known") is False for row in run["rows"]):
+        info.append(["Ограничение", "Пустые цена и сумма означают отсутствие подтверждённой цены в источнике."])
     for warning in run.get("warnings", []):
         info.append(["Ограничение", safe_cell(str(warning))])
     info.column_dimensions["A"].width = 24

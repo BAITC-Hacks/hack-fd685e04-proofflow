@@ -6,13 +6,15 @@ from demo_data import build_demo
 from engine import calculate
 
 
-def test_demo_quantities_and_machine_fields_unchanged_by_localization():
+def test_demo_quantities_and_machine_fields_after_seasonal_correction():
     result = calculate(build_demo())
     quantities = {row["sku"]: row["recommended_quantity"] for row in result["rows"]}
     assert quantities == {
-        "DEMO-GROW-02": 100,
+        # The level is now deseasonalized before trend fitting; these two
+        # previous expectations included a duplicated seasonal uplift.
+        "DEMO-GROW-02": 70,
         "DEMO-MOQ-07": 50,
-        "DEMO-REPEAT-10": 25,
+        "DEMO-REPEAT-10": 5,
         "DEMO-SEASON-01": 0,
         "DEMO-CATEGORY-08": 45,
         "DEMO-SPIKE-04": 50,

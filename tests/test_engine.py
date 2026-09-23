@@ -112,6 +112,19 @@ def test_event_id_can_flag_one_off_order_without_claiming_customer_identity():
     assert any("номером документа, а не с идентификатором клиента" in w for w in result["warnings"])
 
 
+def test_sparse_document_orders_are_not_mistaken_for_one_off_spikes():
+    data = sample(days=90, quantity=0, on_hand=0)
+    for index, sale in enumerate(data["sales"]):
+        if index % 12 == 0:
+            sale["quantity"] = 1
+            sale["event_id"] = f"ORDER-{index}"
+    data["sales"].append({"date": (AS_OF - timedelta(days=4)).isoformat(),
+                          "sku": "A", "warehouse": "W", "quantity": 8,
+                          "event_id": "ORDER-RARE"})
+    result = row(data)
+    assert result["excluded_quantity"] == 0
+
+
 def test_seasonality_is_non_neutral_and_future_date_specific():
     data = sample(days=730, quantity=1, on_hand=0)
     for sale in data["sales"]:
@@ -120,6 +133,18 @@ def test_seasonality_is_non_neutral_and_future_date_specific():
     result = row(data)
     assert result["seasonality_factor"] > 1
     assert result["forecast"][0]["seasonality_factor"] != 1
+
+
+def test_stationary_seasonal_peak_is_not_double_counted_as_growth():
+    data = sample(days=730, quantity=1, on_hand=0)
+    for sale in data["sales"]:
+        if date.fromisoformat(sale["date"]).month in (9, 10):
+            sale["quantity"] = 5
+    result = row(data)
+    # A recurring five-unit autumn demand should not be extrapolated as a
+    # fresh upward trend and then multiplied by the autumn factor again.
+    assert result["trend_factor"] == pytest.approx(1.0, abs=0.15)
+    assert 3.5 <= result["forecast"][0]["demand"] <= 6.5
 
 
 def test_supplier_groups_and_explanations_match_real_calculation():

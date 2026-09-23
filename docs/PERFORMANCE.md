@@ -20,16 +20,37 @@ counts; it does not impose a machine-dependent time limit. Input generation,
 JSON parsing, partner-file import, SQLite persistence, HTTP transfer and
 browser rendering are **not** included in that number. The synthetic shape is
 100 consecutive daily sales per product, and therefore does not represent
-every partner-data skew. Run `python scripts/benchmark.py <local files>` for
-end-to-end import-plus-calculation timing after the importer is integrated; do
-not print or commit raw partner records.
+every partner-data skew.
+
+## Local partner-file import and calculation
+
+On 23 September 2026, `scripts/benchmark.py` was run against the two provided
+local partner directories, after the document-spike handling update. The
+aggregate-only report showed **3,588 SKU**, **248,467 positive sales rows**,
+**313 inbound rows**, **161 suggested order lines**, **527 warnings** and
+**858 excluded one-off events**. Of these, **517 SKU** require manual review
+of document-linked exclusions; a document number is not a customer ID.
+
+| Stage | One local run |
+| --- | ---: |
+| XLSX import and normalization | 16.319 s |
+| Deterministic calculation | 7.580 s |
+| Total | 23.899 s |
+
+The timing excludes SQLite persistence, HTTP upload/response and browser
+rendering. It is a **single workstation observation**, not an SLA or a
+cross-platform benchmark. Missing client IDs, exact stockout periods and
+confirmed supplier lead times limit what this real-data run can prove. The
+warnings and event flags are work for the purchasing manager, not evidence
+that all 161 lines are production-ready. Reproduce locally with
+`.\.venv\Scripts\python.exe scripts/benchmark.py <IEK-dir> <Systeme-dir>`;
+never print or commit source rows.
 
 The calculation groups transactions by `(warehouse, sku)`, then processes each
 product. Result persistence keeps heavy per-product chart details in separate
 SQLite rows while the run list returns compact summaries. The UI preview omits
 the complete sales archive. These choices limit repeated browser transfers,
-but total memory and first import time still need measurement against the
-actual supplied spreadsheets.
+but the benchmark above does not measure peak memory or full HTTP/UI latency.
 
 ## Checks executed
 
@@ -59,25 +80,33 @@ subcases). The tests verify:
    process that can reach the service can read or write; DNS rebinding and
    proxy/network exposure need host-header validation or a stronger trust
    boundary. Do not claim a production-ready CSRF defense.
-3. **Computational input limits are incomplete.** Upload bytes are capped at
-   80 MiB, but `/api/calculate` accepts arbitrary JSON and engine settings such
-   as review/lead/safety days have no safe upper bound. A deliberately huge
-   horizon or historical span can consume CPU/memory. Apply size/horizon limits
-   before any network-facing deployment.
-4. **Privacy depends on import normalization.** The API accepts canonical
-   `client_id` values and excluded-event details may echo them. Actual
-   partner-source import must map only anonymous or pseudonymized IDs; never
-   expose raw client names or send source records to external AI services.
-5. **ZIP parsing is pending audit.** Once `importer.py` is integrated, verify
-   archive member count, decompressed-size and compression-ratio limits,
-   path traversal rejection, nested ZIP policy and workbook parser behavior.
-   An 80 MiB compressed-file limit alone does not prevent ZIP bombs.
+3. **Computational limits are bounded, not a public-service guarantee.** HTTP
+   upload totals are capped at 80 MiB. The engine enforces a 730-day planning
+   horizon, up to 50,000 products, 2 million sales, 100,000 stockout records,
+   2 million inbound rows and bounded history/stockout expansion. A direct
+   JSON request can still consume substantial CPU/memory within those limits;
+   add authentication, per-user quotas and request-body limits before any
+   network-facing deployment.
+4. **Raw identifiers are pseudonymized at the HTTP and importer boundaries.**
+   Incoming `client_id` and `event_id` values are replaced with per-operation
+   HMAC tokens before storage, calculation and detail response; the key is not
+   persisted. This is not a substitute for source anonymization or access
+   control. `engine.calculate` called directly by another Python program is a
+   lower-level function and expects anonymized identifiers from its caller.
+   Never upload client names or partner source rows to an external AI service.
+5. **Archive bounds exist, but require hostile-file review before public use.**
+   The ZIP adapter limits member count, individual/aggregate expanded bytes,
+   compression ratio and selected workbooks, and writes selected basenames
+   under a temporary directory. XLSX internal expanded size is also bounded.
+   Parser resource exhaustion and unusual archive encodings still merit
+   adversarial tests; a local pilot should not imply arbitrary untrusted
+   upload safety.
 
 The two locally provided partner archives were inspected by metadata only,
 without printing source rows: each has 7 members, the largest member
 compression ratio is about 1.2:1, and no absolute or `..` member path was
-observed. This does **not** prove that the general upload parser rejects a
-malicious archive; that separate parser audit remains necessary.
+observed. That does **not** prove the general upload parser is safe against
+every malicious archive.
 
 The calculation outputs drafts; no supplier-send endpoint is present. Human
 approval is required before the export is labelled approved, and even an

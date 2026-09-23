@@ -200,12 +200,15 @@ def _calc_product(product: dict[str, Any], dataset: dict[str, Any], as_of: date,
 
     tx_by_day_client: dict[date, dict[str, float]] = defaultdict(lambda: defaultdict(float))
     known_clients: set[str] = set()
+    actual_client_ids: set[str] = set()
     for tx in sales_by_key.get(k, []):
         d = date.fromisoformat(tx["date"])
         # event_id is an opaque order/document token, never a customer identity.
         client = str(tx.get("client_id") or tx.get("event_id") or "__unknown_client__")
         if tx.get("client_id") or tx.get("event_id"):
             known_clients.add(client)
+        if tx.get("client_id"):
+            actual_client_ids.add(client)
         tx_by_day_client[d][client] += tx["quantity"]
     intervals = stockouts_by_key.get(k, [])
     start_dates = [d for d in tx_by_day_client if d <= as_of]
@@ -236,8 +239,17 @@ def _calc_product(product: dict[str, Any], dataset: dict[str, Any], as_of: date,
     threshold = max(base * settings["outlier_multiplier"], base + 6 * mad, base + 1.0)
     excluded_by_index: dict[int, float] = {}
     events: list[dict[str, Any]] = []
+    document_spike_count = 0
     candidate_indices = [i for i, (v, so) in enumerate(zip(raw_values, is_stockout))
                          if not so and v > threshold]
+    # A document number identifies an order, not a repeat customer. For that
+    # weaker signal, require enough non-zero reference days and a genuinely
+    # extreme quantity relative to the positive-day distribution. A median of
+    # zero on intermittent SKUs must not classify ordinary orders as spikes.
+    active_values = sorted(v for v in eligible if v > 0)
+    active_median = median(active_values) if active_values else 0.0
+    active_p90 = active_values[int(0.9 * (len(active_values) - 1))] if active_values else 0.0
+    document_threshold = max(threshold * 2, active_median * 8, active_p90 * 3)
     client_history: dict[str, list[tuple[date, float]]] = defaultdict(list)
     for transaction_day, clients in tx_by_day_client.items():
         for client_id, quantity in clients.items():
@@ -250,6 +262,9 @@ def _calc_product(product: dict[str, Any], dataset: dict[str, Any], as_of: date,
         if client not in known_clients:
             # Anonymous daily totals cannot prove a single-order/customer
             # spike. Do not silently remove their legitimate demand.
+            continue
+        if client not in actual_client_ids and (
+                len(active_values) < 14 or largest <= document_threshold):
             continue
         total = raw_values[i]
         share = largest / total if total else 0.0
@@ -275,12 +290,13 @@ def _calc_product(product: dict[str, Any], dataset: dict[str, Any], as_of: date,
                        "raw_quantity": round(total, 6), "retained_quantity": round(expected, 6),
                        "excluded_quantity": round(removed, 6), "client_share": round(share, 4),
                        "reason": "Разовый выброс за день: преобладает один клиент или заказ; повторного пика в том же месяце нет"})
-        if client == "__unknown_client__" or not any(
-                tx.get("client_id") and str(tx.get("client_id")) == client
-                for tx in sales_by_key.get(k, [])):
-            local_warnings.append(
-                f"{history_dates[i].isoformat()}: разовый всплеск связан с номером документа, "
-                "а не с идентификатором клиента; проверьте исключение")
+        if client not in actual_client_ids:
+            document_spike_count += 1
+
+    if document_spike_count:
+        local_warnings.append(
+            f"{document_spike_count} разовых всплесков связаны с номером документа, "
+            "а не с идентификатором клиента; проверьте исключения в деталях")
 
     cleaned = [max(0.0, v - excluded_by_index.get(i, 0.0))
                for i, v in enumerate(raw_values)]
@@ -324,9 +340,20 @@ def _calc_product(product: dict[str, Any], dataset: dict[str, Any], as_of: date,
         [{"date": r["date"], "demand": r["adjusted_demand"],
           "stockout": r["stockout"], "excluded": r["excluded"]} for r in history],
         int(settings["seasonality_min_observations"]))
+    # Fit the recent level/trend on deseasonalized observations. Otherwise a
+    # normal seasonal peak near as_of looks like persistent growth and is then
+    # multiplied by the same seasonal index a second time in the forecast.
+    deseasonalized = []
+    for item in history:
+        observed_day = date.fromisoformat(item["date"])
+        observed_factor = (seasonality["weekday"][observed_day.weekday()]
+                           * seasonality["month"][observed_day.month])
+        deseasonalized.append({
+            "demand": item["adjusted_demand"] / max(observed_factor, 0.05),
+            "stockout": item["stockout"], "excluded": item["excluded"],
+        })
     trend_factor, level = _trend_factor(
-        [{"demand": r["adjusted_demand"], "stockout": r["stockout"], "excluded": r["excluded"]}
-         for r in history], horizon, int(settings["trend_window_days"]))
+        deseasonalized, horizon, int(settings["trend_window_days"]))
     growth_factor = max(0.0, (1 + sku_growth) * (1 + category_growth))
     forecast: list[dict[str, Any]] = []
     future_start = as_of + timedelta(days=1)

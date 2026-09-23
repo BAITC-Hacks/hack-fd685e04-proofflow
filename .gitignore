@@ -7,4 +7,9 @@ __pycache__/
 !.env.example
 private_data/
 *.zip
+*.xlsx
+*.xls
+*.csv
+*.sqlite3*
+*.db
 node_modules/
